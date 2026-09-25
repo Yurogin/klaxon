@@ -1,5 +1,5 @@
 // Réseau d'abord, cache en secours : l'appli s'installe et s'ouvre même hors ligne (sans klaxonner).
-const CACHE = "klaxon-v1";
+const CACHE = "klaxon-v2";
 const FILES = ["./", "index.html", "mqtt.min.js", "manifest.webmanifest", "icon.svg", "icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(self.clients.claim()); });

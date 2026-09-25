@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.parse
 import uuid
 import wave
 
@@ -27,8 +28,11 @@ BROKERS = [
     ("test.mosquitto.org", [(8886, "tcp", None), (8081, "websockets", "/")]),
 ]
 APP_PREFIX = "klaxon-stlkm/v1/"
+SITE = "https://klaxon.stlkm.fr/"
 START = int(time.time() * 1000)  # distingue les klaxons de deux lancements successifs
-COOLDOWN = 0.35        # anti-spam, par destinataire
+COOLDOWN = 0.35        # secondes entre deux klaxons
+MAX_HOLD = 4.0         # un klaxon long s'arrête tout seul au bout de ce temps
+RIPOSTE = 4.0          # secondes pendant lesquelles on peut riposter d'un clic
 
 CONFIG = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Klaxon", "config.json")
 
@@ -40,30 +44,77 @@ YELLOW = "#ffc629"
 BLUE = "#2f6fed"
 RED = "#e8412c"
 
+# nom -> (libellé, emoji, durée minimale d'un simple clic)
+SOUNDS = {
+    "klaxon": ("Klaxon", "🚗", 0.6),
+    "pouet": ("Pouet", "🤡", 0.35),
+    "camion": ("Camion", "🚛", 0.8),
+    "vuvuzela": ("Vuvuzela", "🎺", 0.7),
+    "canard": ("Canard", "🦆", 0.2),
+}
+
 try:
     import winsound
 except ImportError:
     winsound = None
 
 
-def make_horn_wav(path):
-    """Synthétise un klaxon de voiture (deux notes saturées, ~0,6 s)."""
-    rate, dur = 22050, 0.6
-    n = int(rate * dur)
-    frames = bytearray()
-    for i in range(n):
+def sound_of(name):
+    return name if name in SOUNDS else "klaxon"
+
+
+def synth(kind, rate):
+    """Une boucle d'exactement 1 s (fréquences entières) : un klaxon long boucle sans clic.
+    Mêmes formules que dans index.html."""
+    tau2 = 2 * math.pi
+    out = []
+    phase = 0.0
+    for i in range(rate):
         t = i / rate
         s = 0.0
-        for f in (415.0, 523.0):
-            s += math.tanh(4 * math.sin(2 * math.pi * f * t))
-            s += 0.3 * math.sin(2 * math.pi * 2 * f * t)
-        env = min(1.0, t / 0.02) * min(1.0, (dur - t) / 0.05)
-        frames += struct.pack("<h", int(max(-1, min(1, s / 2.8 * env)) * 30000))
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(bytes(frames))
+        if kind == "klaxon":
+            for f in (415, 523):
+                s += math.tanh(4 * math.sin(tau2 * f * t)) + 0.3 * math.sin(tau2 * 2 * f * t)
+        elif kind == "camion":
+            for f in (185, 233, 277):
+                s += math.tanh(2.5 * math.sin(tau2 * f * t)) + 0.5 * math.sin(tau2 * 2 * f * t)
+            s += 0.6 * math.sin(tau2 * 92 * t)
+        elif kind == "vuvuzela":
+            ph = tau2 * 235 * t + 0.6 * math.sin(tau2 * 5 * t)
+            for k in range(1, 11):
+                s += math.sin(k * ph) / k ** 0.8
+        elif kind == "pouet":
+            tau, length = t % 0.5, 0.32
+            if tau < 1 / rate:
+                phase = 0.0
+            if tau < length:
+                phase += tau2 * (360 + 120 * math.sin(math.pi * tau / length)) / rate
+                s = (math.tanh(3 * math.sin(phase)) + 0.4 * math.sin(2 * phase)) * \
+                    math.sin(math.pi * tau / length) ** 0.6
+        elif kind == "canard":
+            tau, length = t % (1 / 3), 0.17
+            if tau < 1 / rate:
+                phase = 0.0
+            if tau < length:
+                phase += tau2 * (210 - 300 * tau) / rate
+                s = math.tanh(8 * math.sin(phase)) * (0.6 + 0.4 * math.sin(tau2 * 1100 * t)) * \
+                    min(1.0, tau / 0.01) * math.sqrt(1 - tau / length)
+        out.append(s)
+    peak = max(abs(v) for v in out) or 1.0
+    return [v / peak * 0.9 for v in out]
+
+
+def sound_file(kind):
+    path = os.path.join(tempfile.gettempdir(), "klaxon_v2_%s.wav" % kind)
+    if not os.path.exists(path):
+        rate = 22050
+        frames = b"".join(struct.pack("<h", int(v * 32000)) for v in synth(kind, rate))
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(frames)
+    return path
 
 
 def load_config():
@@ -90,13 +141,14 @@ def room_base(room):
 
 class Link:
     """Une connexion à un serveur. Présence : message retenu sur <salon>/p/<id>, que le serveur
-    efface tout seul (testament MQTT) si le client disparaît. Klaxons : messages sur <salon>/h."""
+    efface tout seul (testament MQTT) si le client disparaît. Klaxons : <salon>/h (début)
+    et <salon>/he (fin d'un klaxon long)."""
 
     def __init__(self, net, host, routes):
         self.net, self.host, self.routes = net, host, routes
         self.client = None
         self.online = False
-        self.peers = {}  # id -> nom, vus sur ce serveur
+        self.peers = {}  # id -> {"name", "sound"}, vus sur ce serveur
         threading.Thread(target=self._connect_loop, daemon=True).start()
 
     def _make_client(self, transport, path):
@@ -154,14 +206,17 @@ class Link:
                     self.peers.pop(pid, None)
                 else:
                     try:
-                        self.peers[pid] = str(json.loads(msg.payload).get("name", "?"))[:24]
+                        p = json.loads(msg.payload)
+                        self.peers[pid] = {"name": str(p.get("name", "?"))[:24], "sound": sound_of(p.get("sound"))}
                     except (ValueError, AttributeError):
                         return
             self.net.changed()
-        elif sub == "h":
+        elif sub in ("h", "he"):
             try:
-                self.net.received(json.loads(msg.payload))
-            except (ValueError, AttributeError):
+                data = json.loads(msg.payload)
+                if isinstance(data, dict):
+                    self.net.received(sub, data)
+            except ValueError:
                 pass
 
     def publish(self, sub, payload, qos=0, retain=False):
@@ -169,7 +224,7 @@ class Link:
             return self.client.publish(self.net.base + sub, payload, qos=qos, retain=retain)
 
     def announce(self):
-        self.publish("p/" + self.net.my_id, json.dumps({"name": self.net.name}), qos=1, retain=True)
+        self.publish("p/" + self.net.my_id, self.net.presence(), qos=1, retain=True)
 
     def switch_room(self, old):
         with self.net.lock:
@@ -196,15 +251,19 @@ class Link:
 class Net:
     """Parle aux trois serveurs à la fois : on envoie partout, on fusionne ce qu'on reçoit."""
 
-    def __init__(self, my_id, events, name, room):
+    def __init__(self, my_id, events, name, sound, room):
         self.my_id = my_id
         self.events = events
         self.name = name
+        self.sound = sound
         self.base = room_base(room)
         self.lock = threading.Lock()
         self.seq = 0
         self.seen_msgs = {}  # (id, n) -> heure : un klaxon arrive une fois par serveur
         self.links = [Link(self, host, routes) for host, routes in BROKERS]
+
+    def presence(self):
+        return json.dumps({"name": self.name, "sound": self.sound})
 
     def changed(self):
         self.events.put(("conn", self.online_count()))
@@ -213,30 +272,46 @@ class Net:
     def online_count(self):
         return sum(l.online for l in self.links)
 
-    def received(self, data):
+    def received(self, kind, data):
         pid = data.get("id")
-        if not pid or pid == self.my_id or data.get("to") not in (None, self.my_id):
+        if not pid or pid == self.my_id:
             return
-        key, now = (pid, data.get("n")), time.time()
+        key = "%s/%s" % (pid, data.get("n"))
+        if kind == "he":
+            self.events.put(("hend", key))
+            return
+        if data.get("to") not in (None, self.my_id):
+            return
+        now = time.time()
         with self.lock:
-            if key[1] is not None:  # sans numéro : ancienne version, un seul serveur, pas de doublon
-                if key in self.seen_msgs:
-                    return
-                self.seen_msgs[key] = now
-                if len(self.seen_msgs) > 500:
-                    self.seen_msgs = {k: v for k, v in self.seen_msgs.items() if now - v < 60}
-        self.events.put(("honk", str(data.get("name", "?"))[:24], data.get("to") is None))
+            if data.get("n") is None:  # sans numéro : ancienne version, un seul serveur, pas de doublon
+                key += "/%f" % now
+            elif key in self.seen_msgs:
+                return
+            self.seen_msgs[key] = now
+            if len(self.seen_msgs) > 500:
+                self.seen_msgs = {k: v for k, v in self.seen_msgs.items() if now - v < 60}
+        self.events.put(("honk", pid, str(data.get("name", "?"))[:24], data.get("to") is None,
+                         key, sound_of(data.get("sound")), bool(data.get("hold"))))
 
-    def honk(self, to=None):
-        """to=None : tout le monde, sinon l'id d'un pair."""
+    def press(self, to=None):
+        """Début d'un klaxon (to=None : tout le monde, sinon l'id d'un pair). Renvoie son numéro."""
         self.seq += 1
         # n rend chaque klaxon unique, même d'un lancement à l'autre
-        payload = json.dumps({"id": self.my_id, "name": self.name, "to": to, "n": "%d-%d" % (START, self.seq)})
+        n = "%d-%d" % (START, self.seq)
+        payload = json.dumps({"id": self.my_id, "name": self.name, "to": to, "n": n,
+                              "sound": self.sound, "hold": True})
         for l in self.links:
             l.publish("h", payload)
+        return n
 
-    def set_name(self, name):
-        self.name = name
+    def release(self, n):
+        payload = json.dumps({"id": self.my_id, "n": n})
+        for l in self.links:
+            l.publish("he", payload)
+
+    def set_profile(self, name, sound):
+        self.name, self.sound = name, sound
         for l in self.links:
             l.announce()
 
@@ -261,20 +336,52 @@ class Net:
             merged = {}
             for l in self.links:
                 merged.update(l.peers)
-        return sorted(merged.items(), key=lambda x: x[1].lower())
+        return sorted(merged.items(), key=lambda x: x[1]["name"].lower())
+
+
+class Player:
+    """winsound ne joue qu'un son à la fois : le dernier klaxon arrivé prend la place."""
+
+    def __init__(self, root):
+        self.root = root
+        self.files = {k: sound_file(k) for k in SOUNDS}
+        self.key = None
+        self.t0 = 0.0
+        self.min = 0.0
+
+    def start(self, key, sound):
+        sound = sound_of(sound)
+        self.key, self.t0, self.min = key, time.time(), SOUNDS[sound][2]
+        if winsound:
+            winsound.PlaySound(self.files[sound], winsound.SND_FILENAME | winsound.SND_ASYNC |
+                               winsound.SND_LOOP | winsound.SND_NODEFAULT)
+        else:
+            self.root.bell()
+        self.root.after(int(MAX_HOLD * 1000), lambda: self._stop(key))
+
+    def end(self, key):
+        if key != self.key:
+            return
+        wait = max(0.0, self.t0 + self.min - time.time())  # un clic joue au moins le son en entier
+        self.root.after(int(wait * 1000), lambda: self._stop(key))
+
+    def _stop(self, key):
+        if key == self.key:
+            self.key = None
+            if winsound:
+                winsound.PlaySound(None, 0)
 
 
 class App:
     def __init__(self):
         self.my_id = uuid.uuid4().hex[:12]
         self.events = queue.Queue()
-        self.last_honk = {}
+        self.last_press = 0.0
         self.flash_until = 0
         self.online = False
-
-        self.horn = os.path.join(tempfile.gettempdir(), "klaxon_horn.wav")
-        if not os.path.exists(self.horn):
-            make_horn_wav(self.horn)
+        self.holding = None   # (numéro, bouton)
+        self.riposte = None   # (id, nom, jusqu'à)
+        self.blink = False
 
         self.cfg = load_config()
         default_name = os.environ.get("USERNAME") or socket.gethostname()
@@ -282,10 +389,12 @@ class App:
         self.root = tk.Tk()
         self.root.title("Klaxon")
         self.root.configure(bg=BG)
-        self.root.geometry("520x660")
-        self.root.minsize(420, 520)
+        self.root.geometry("560x720")
+        self.root.minsize(460, 580)
+        self.player = Player(self.root)
         self.name = tk.StringVar(value=self.cfg.get("name") or default_name[:24])
         self.room = tk.StringVar(value=self.cfg.get("room") or "")
+        self.sound = sound_of(self.cfg.get("sound"))
 
         self.fields = tk.Frame(self.root, bg=BG)
         self.fields.pack(fill="x", padx=20, pady=(18, 6))
@@ -297,36 +406,56 @@ class App:
                 row=row, column=0, sticky="w", pady=4)
             e = tk.Entry(self.fields, textvariable=var, font=("Segoe UI", 16, "bold"), bg=FIELD,
                          fg=FG, insertbackground=FG, relief="flat")
-            e.grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=4, ipady=4)
+            e.grid(row=row, column=1, columnspan=2 - row, sticky="ew", padx=(12, 0), pady=4, ipady=4)
             e.bind("<Return>", lambda ev, a=apply: (a(), self.root.focus()))
             e.bind("<FocusOut>", lambda ev, a=apply: a())
             self.entries.append(e)
+        self.invite_btn = tk.Button(self.fields, text="🔗 Inviter", command=self.invite, font=("Segoe UI", 12, "bold"),
+                                    bg=FIELD, fg=FG, activebackground="#2f333d", activeforeground=FG,
+                                    relief="flat", cursor="hand2", padx=10)
+        self.invite_btn.grid(row=1, column=2, sticky="ns", padx=(8, 0), pady=4)
+
+        self.sound_row = tk.Frame(self.root, bg=BG)
+        self.sound_row.pack(fill="x", padx=20, pady=(4, 0))
+        self.sound_btns = {}
+        for i, (k, (label, emoji, _)) in enumerate(SOUNDS.items()):
+            b = tk.Button(self.sound_row, text="%s\n%s" % (emoji, label), command=lambda k=k: self.pick_sound(k),
+                          font=("Segoe UI", 11, "bold"), relief="flat", cursor="hand2", pady=4)
+            b.grid(row=0, column=i, sticky="ew", padx=3)
+            self.sound_row.columnconfigure(i, weight=1, uniform="s")
+            self.sound_btns[k] = b
+        self.paint_sounds()
 
         self.status = tk.Label(self.root, text="", bg=BG, fg=MUTED, font=("Segoe UI", 20, "bold"))
         self.status.pack(fill="x", pady=(8, 4))
+        self.bind_hold(self.status, lambda: self.riposte[0] if self.riposte else False)
 
-        self.all_btn = tk.Button(self.root, text="📯  TOUT LE MONDE", command=lambda: self.honk(None),
-                                 font=("Segoe UI", 26, "bold"), bg=YELLOW, fg="#1a1a1a",
-                                 activebackground="#ffdb70", relief="flat", cursor="hand2")
-        self.all_btn.pack(fill="x", padx=20, pady=(4, 12), ipady=18)
+        self.all_btn = tk.Button(self.root, text="📯  TOUT LE MONDE", font=("Segoe UI", 26, "bold"), bg=YELLOW,
+                                 fg="#1a1a1a", activebackground="#ffdb70", relief="flat", cursor="hand2")
+        self.all_btn.pack(fill="x", padx=20, pady=(4, 12), ipady=16)
+        self.bind_hold(self.all_btn, lambda: None)
 
         self.grid = tk.Frame(self.root, bg=BG)
         self.grid.pack(fill="both", expand=True, padx=20, pady=(0, 18))
 
-        self.root.bind("<space>", lambda e: None if e.widget in self.entries else self.honk(None))
+        self.root.bind("<KeyPress-space>", lambda e: None if e.widget in self.entries else self.press(None, self.all_btn))
+        self.root.bind("<KeyRelease-space>", lambda e: None if e.widget in self.entries else self.release())
+        self.root.bind("<FocusOut>", lambda e: self.release() if e.widget is self.root else None)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
         self.net = None
         self.shown = None
+        self.peer_btns = {}
         if self.room.get().strip():
             self.start_net()
         else:
             self.entries[1].focus()
-        self.render_peers(force=True)
+        self.render_peers()
         self.poll()
+        self.tick_blink()
 
     def start_net(self):
-        self.net = Net(self.my_id, self.events, self.my_name(), self.room.get())
+        self.net = Net(self.my_id, self.events, self.my_name(), self.sound, self.room.get())
 
     # --- champs ----------------------------------------------------------
     def my_name(self):
@@ -338,7 +467,7 @@ class App:
             self.cfg["name"] = name
             save_config(self.cfg)
             if self.net:
-                self.net.set_name(name)
+                self.net.set_profile(name, self.sound)
 
     def apply_room(self):
         room = self.room.get().strip()
@@ -346,11 +475,36 @@ class App:
             return
         self.cfg["room"] = room
         save_config(self.cfg)
+        self.riposte = None
         if self.net:
             self.net.set_room(room)
         else:
             self.start_net()
-        self.render_peers(force=True)
+        self.render_peers()
+
+    def pick_sound(self, k):
+        self.sound = k
+        self.cfg["sound"] = k
+        save_config(self.cfg)
+        self.paint_sounds()
+        key = "essai/%f" % time.time()
+        self.player.start(key, k)
+        self.player.end(key)
+        if self.net:
+            self.net.set_profile(self.my_name(), k)
+
+    def paint_sounds(self):
+        for k, b in self.sound_btns.items():
+            on = k == self.sound
+            b.configure(bg=YELLOW if on else FIELD, fg="#1a1a1a" if on else MUTED,
+                        activebackground=YELLOW if on else "#2f333d", activeforeground="#1a1a1a" if on else FG)
+
+    def invite(self):
+        link = SITE + "#" + urllib.parse.quote(self.room.get().strip())
+        self.root.clipboard_clear()
+        self.root.clipboard_append(link)
+        self.invite_btn.configure(text="✓ Lien copié", bg=YELLOW, fg="#1a1a1a")
+        self.root.after(1600, lambda: self.invite_btn.configure(text="🔗 Inviter", bg=FIELD, fg=FG))
 
     # --- réseau -> interface ---------------------------------------------
     def poll(self):
@@ -361,34 +515,61 @@ class App:
                     self.render_peers()
                 elif ev[0] == "conn":
                     self.online = ev[1] > 0
-                    self.render_peers(force=True)
+                    self.render_peers()
                 elif ev[0] == "honk":
-                    self.honked_by(ev[1], ev[2])
+                    self.honked_by(*ev[1:])
+                elif ev[0] == "hend":
+                    self.player.end(ev[1])
         except queue.Empty:
             pass
         if self.flash_until and time.time() > self.flash_until:
             self.flash_until = 0
             self.set_bg(BG)
             self.render_status()
+        if self.riposte and time.time() > self.riposte[2]:
+            self.riposte = None
+            self.render_peers()
         self.root.after(40, self.poll)
 
-    # --- actions ---------------------------------------------------------
-    def honk(self, to):
-        if not self.net or not self.net.snapshot():
+    # --- klaxonner : appuyer = ça klaxonne, relâcher = ça s'arrête ---------
+    def bind_hold(self, widget, target):
+        """target() donne le destinataire : None = tout le monde, False = personne."""
+        widget.bind("<ButtonPress-1>", lambda e: self.press(target(), widget))
+        widget.bind("<ButtonRelease-1>", lambda e: self.release())
+
+    def press(self, to, widget=None):
+        if to is False or self.holding or not self.net or not self.online or not self.net.snapshot():
             return
         now = time.time()
-        if now - self.last_honk.get(to, 0) < COOLDOWN:
+        if now - self.last_press < COOLDOWN:
             return
-        self.last_honk[to] = now
-        self.net.honk(to)
-        self.play()  # on s'entend klaxonner aussi
+        self.last_press = now
+        n = self.net.press(to)
+        self.player.start("moi/" + n, self.sound)  # on s'entend klaxonner aussi
+        self.holding = (n, widget)
+        self.root.after(int(MAX_HOLD * 1000), lambda: self.release(n))
+        if self.riposte and to == self.riposte[0]:
+            self.riposte = None
+            self.render_peers()
 
-    def honked_by(self, who, everyone):
-        self.play()
+    def release(self, only=None):
+        if not self.holding or (only and self.holding[0] != only):
+            return
+        n, _ = self.holding
+        self.holding = None
+        self.net.release(n)
+        self.player.end("moi/" + n)
+
+    def honked_by(self, pid, who, everyone, key, sound, hold):
+        self.player.start(key, sound)
+        if not hold:
+            self.player.end(key)  # ancienne version : un coup simple
         self.set_bg(RED)
         self.status.configure(text="📯 %s %s" % (who, "klaxonne tout le monde !" if everyone else "te klaxonne !"),
                               fg=FG)
         self.flash_until = time.time() + 1.2
+        self.riposte = (pid, who, time.time() + RIPOSTE)
+        self.render_peers()
         try:
             self.root.deiconify()
             self.root.attributes("-topmost", True)
@@ -396,15 +577,9 @@ class App:
         except tk.TclError:
             pass
 
-    def play(self):
-        if winsound:
-            winsound.PlaySound(self.horn, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-        else:
-            self.root.bell()
-
     # --- rendu -----------------------------------------------------------
     def set_bg(self, color):
-        for w in (self.root, self.grid, self.status, self.fields):
+        for w in (self.root, self.grid, self.status, self.fields, self.sound_row):
             w.configure(bg=color)
         for c in self.fields.winfo_children():
             if isinstance(c, tk.Label):
@@ -415,38 +590,58 @@ class App:
             text = "Choisis un salon ↑"
         elif not self.online:
             text = "Connexion…"
+        elif self.riposte:
+            text = "↩ Riposter à " + self.riposte[1]
         elif not self.net.snapshot():
             text = "Personne d'autre dans le salon"
         else:
             text = "%d dans le salon" % (len(self.net.snapshot()) + 1)
-        self.status.configure(text=text, fg=MUTED)
+        self.status.configure(text=text, fg=MUTED, cursor="hand2" if self.riposte else "")
 
-    def render_peers(self, force=False):
+    def tick_blink(self):
+        self.blink = not self.blink
+        if self.riposte and self.riposte[0] in self.peer_btns:
+            self.peer_btns[self.riposte[0]].configure(bg=YELLOW if self.blink else BLUE,
+                                                      fg="#1a1a1a" if self.blink else "white")
+        self.root.after(250, self.tick_blink)
+
+    def render_peers(self):
+        # les boutons ne sont recréés que si quelqu'un arrive ou part : un klaxon long n'est pas coupé
         peers = self.net.snapshot() if self.net else []
-        if peers == self.shown and not force:
-            return
-        self.shown = peers
-        for w in self.grid.winfo_children():
-            w.destroy()
+        if self.riposte and self.riposte[0] not in dict(peers):
+            self.riposte = None
         if not self.flash_until:
             self.render_status()
         self.all_btn.configure(state="normal" if peers else "disabled")
-        if not peers:
-            return
-        cols = 1 if len(peers) == 1 else 2
-        for i, (pid, pname) in enumerate(peers):
-            b = tk.Button(self.grid, text=pname, command=lambda p=pid: self.honk(p),
-                          font=("Segoe UI", 20 if len(peers) <= 4 else 16, "bold"), bg=BLUE, fg="white",
-                          activebackground="#5a8cf5", activeforeground="white", relief="flat",
-                          cursor="hand2", wraplength=200)
-            b.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
-        rows = (len(peers) + cols - 1) // cols
-        for c in range(2):
-            self.grid.columnconfigure(c, weight=1 if c < cols else 0, uniform="c" if c < cols else "")
-        for r in range(max(rows, 4)):
-            self.grid.rowconfigure(r, weight=1 if r < rows else 0)
+        order = [pid for pid, _ in peers]
+        if order != self.shown:
+            self.shown = order
+            if self.holding and self.holding[1] in self.peer_btns.values():
+                self.release()
+            for w in self.grid.winfo_children():
+                w.destroy()
+            self.peer_btns = {}
+            cols = 1 if len(peers) == 1 else 2
+            for i, (pid, _) in enumerate(peers):
+                b = tk.Button(self.grid, font=("Segoe UI", 20 if len(peers) <= 4 else 16, "bold"),
+                              activebackground="#5a8cf5", activeforeground="white", relief="flat",
+                              cursor="hand2", wraplength=220)
+                b.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
+                self.bind_hold(b, lambda p=pid: p)
+                self.peer_btns[pid] = b
+            rows = (len(peers) + cols - 1) // cols
+            for c in range(2):
+                self.grid.columnconfigure(c, weight=1 if c < cols else 0, uniform="c" if c < cols else "")
+            for r in range(max(rows, 4)):
+                self.grid.rowconfigure(r, weight=1 if r < rows else 0)
+        for pid, p in peers:
+            b = self.peer_btns[pid]
+            b.configure(text="%s\n%s" % (p["name"], SOUNDS[p["sound"]][1]))
+            if not (self.riposte and self.riposte[0] == pid):
+                b.configure(bg=BLUE, fg="white")
 
     def quit(self):
+        self.release()
         self.apply_name()
         try:
             if self.net:

@@ -34,14 +34,14 @@
   }
   body.flash { background: var(--red); }
   button, input { font: inherit; color: inherit; }
-  button { cursor: pointer; border: 0; }
+  button { cursor: pointer; border: 0; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
   button:focus-visible, input:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
 
   .screen {
     height: 100%;
     display: flex;
     flex-direction: column;
-    gap: clamp(8px, 1.6vh, 16px);
+    gap: clamp(6px, 1.4vh, 14px);
     padding: max(16px, env(safe-area-inset-top)) max(16px, 3vw) max(16px, env(safe-area-inset-bottom));
     max-width: 900px;
     margin: 0 auto;
@@ -59,6 +59,8 @@
     text-align: center;
   }
   .fields { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
+  #room-form { grid-template-columns: auto 1fr auto; }
+  #room-form #name { grid-column: 2 / -1; }
   .fields label { color: var(--muted); font-size: clamp(14px, 2.2vh, 20px); }
   .fields input {
     min-width: 0;
@@ -80,7 +82,34 @@
     border-radius: 10px;
   }
   #enter:hover { background: var(--yellow-hi); }
-  #enter:disabled { opacity: .4; cursor: default; }
+  #invite {
+    align-self: stretch;
+    background: var(--field);
+    border-radius: 6px;
+    padding: 0 .8em;
+    font-weight: 700;
+    font-size: clamp(14px, 2.2vh, 20px);
+    white-space: nowrap;
+  }
+  #invite:hover { background: #2f333d; }
+  #invite.ok { background: var(--yellow); color: #1a1a1a; }
+
+  /* --- choix du son --- */
+  #sounds { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  #sounds button {
+    background: var(--field);
+    border-radius: 8px;
+    padding: clamp(4px, 1vh, 10px) 2px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1.15;
+    font-size: clamp(11px, 1.7vh, 15px);
+    color: var(--muted);
+    border: 2px solid transparent;
+  }
+  #sounds button .e { font-size: clamp(20px, 3.6vh, 32px); }
+  #sounds button[aria-pressed="true"] { border-color: var(--yellow); color: var(--fg); background: #2a2d36; }
 
   /* --- salon --- */
   #status {
@@ -92,14 +121,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    background: none;
+    padding: 0;
+    cursor: default;
   }
   body.flash #status { color: var(--fg); }
+  #status.riposte { cursor: pointer; }
   #all {
     background: var(--yellow);
     color: #1a1a1a;
     font-weight: 900;
     font-size: clamp(24px, 5.5vh, 48px);
-    padding: clamp(12px, 3vh, 30px) 12px;
+    padding: clamp(10px, 2.6vh, 26px) 12px;
     border-radius: 10px;
   }
   #all:hover:not(:disabled) { background: var(--yellow-hi); }
@@ -122,12 +155,22 @@
     padding: 6px 10px;
     overflow: hidden;
     overflow-wrap: anywhere;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: .1em;
+    border: 4px solid transparent;
   }
+  #peers button .e { font-size: .6em; opacity: .85; }
   #peers button:hover { background: var(--blue-hi); }
-  #peers button.hit { animation: hit .25s; }
-  @keyframes hit { 50% { transform: scale(.95); } }
+  #all.down, #peers button.down { transform: scale(.96); filter: brightness(1.15); }
+  /* la personne qui vient de te klaxonner : un clic dessus et tu ripostes */
+  #peers button.riposte { border-color: var(--yellow); animation: riposte .5s ease-in-out infinite alternate; }
+  @keyframes riposte { to { border-color: transparent; } }
   @media (prefers-reduced-motion: reduce) {
-    body, #peers button.hit { transition: none; animation: none; }
+    body { transition: none; }
+    #peers button.riposte { animation: none; }
   }
 </style>
 </head>
@@ -150,8 +193,10 @@
     <input id="name" maxlength="24">
     <label for="room-input">Salon</label>
     <input id="room-input" maxlength="60">
+    <button id="invite" type="button">🔗 Inviter</button>
   </form>
-  <div id="status" aria-live="polite"></div>
+  <div id="sounds" role="group" aria-label="Mon klaxon"></div>
+  <button id="status" type="button" aria-live="polite"></button>
   <button id="all" type="button" disabled>📯 TOUT LE MONDE</button>
   <div id="peers"></div>
 </main>
@@ -167,7 +212,10 @@ const BROKERS = [
   "wss://test.mosquitto.org:8081",
 ];
 const APP_PREFIX = "klaxon-stlkm/v1/";
-const COOLDOWN = 350;
+const SITE = "https://klaxon.stlkm.fr/";
+const COOLDOWN = 350;       // ms entre deux klaxons
+const MAX_HOLD = 4;         // s : un klaxon long s'arrête tout seul au bout de ce temps
+const RIPOSTE = 4000;       // ms pendant lesquels on peut riposter d'un clic
 
 const $ = (id) => document.getElementById(id);
 const myId = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -178,37 +226,97 @@ const store = {
 };
 
 let links = [], base = "", online = false;
-let peers = new Map();          // id -> nom, fusion des trois serveurs
-let flashTimer = 0, lastHonk = new Map();
+let peers = new Map();          // id -> { name, sound }, fusion des trois serveurs
+let flashTimer = 0, lastPress = 0;
 let seq = 0, seen = new Map();  // un klaxon arrive une fois par serveur : on n'en joue qu'un
 const START = Date.now();
+let riposte = null;             // { id, name, until }
 
-// ---------- son : même klaxon synthétisé que l'appli ----------
-let audio = null, hornBuf = null;
-function initAudio() {
-  if (audio) { audio.resume(); return; }
-  audio = new (window.AudioContext || window.webkitAudioContext)();
-  const rate = audio.sampleRate, dur = 0.6, n = Math.floor(rate * dur);
-  hornBuf = audio.createBuffer(1, n, rate);
-  const d = hornBuf.getChannelData(0);
+// ---------- sons ----------
+// Chaque son est une boucle d'exactement 1 s (fréquences entières) : un klaxon long boucle sans clic.
+// Mêmes formules que dans windows/klaxon.py.
+const SOUNDS = {
+  klaxon:   { label: "Klaxon",   e: "🚗", min: 0.6 },
+  pouet:    { label: "Pouet",    e: "🤡", min: 0.35 },
+  camion:   { label: "Camion",   e: "🚛", min: 0.8 },
+  vuvuzela: { label: "Vuvuzela", e: "🎺", min: 0.7 },
+  canard:   { label: "Canard",   e: "🦆", min: 0.2 },
+};
+const soundOf = (k) => SOUNDS[k] ? k : "klaxon";
+
+function synth(kind, rate) {
+  const n = rate, d = new Float32Array(n), TAU = 2 * Math.PI;
+  let phase = 0;
   for (let i = 0; i < n; i++) {
     const t = i / rate;
     let s = 0;
-    for (const f of [415, 523]) {
-      s += Math.tanh(4 * Math.sin(2 * Math.PI * f * t));
-      s += 0.3 * Math.sin(2 * Math.PI * 2 * f * t);
+    if (kind === "klaxon") {
+      for (const f of [415, 523]) s += Math.tanh(4 * Math.sin(TAU * f * t)) + 0.3 * Math.sin(TAU * 2 * f * t);
+    } else if (kind === "camion") {
+      for (const f of [185, 233, 277]) s += Math.tanh(2.5 * Math.sin(TAU * f * t)) + 0.5 * Math.sin(TAU * 2 * f * t);
+      s += 0.6 * Math.sin(TAU * 92 * t);
+    } else if (kind === "vuvuzela") {
+      const ph = TAU * 235 * t + 0.6 * Math.sin(TAU * 5 * t);
+      for (let k = 1; k <= 10; k++) s += Math.sin(k * ph) / Math.pow(k, 0.8);
+    } else if (kind === "pouet") {
+      const tau = t % 0.5, L = 0.32;
+      if (tau < 1 / rate) phase = 0;
+      if (tau < L) {
+        phase += TAU * (360 + 120 * Math.sin(Math.PI * tau / L)) / rate;
+        s = (Math.tanh(3 * Math.sin(phase)) + 0.4 * Math.sin(2 * phase)) * Math.pow(Math.sin(Math.PI * tau / L), 0.6);
+      }
+    } else if (kind === "canard") {
+      const tau = t % (1 / 3), L = 0.17;
+      if (tau < 1 / rate) phase = 0;
+      if (tau < L) {
+        phase += TAU * (210 - 300 * tau) / rate;
+        s = Math.tanh(8 * Math.sin(phase)) * (0.6 + 0.4 * Math.sin(TAU * 1100 * t)) * Math.min(1, tau / 0.01) * Math.sqrt(1 - tau / L);
+      }
     }
-    const env = Math.min(1, t / 0.02) * Math.min(1, (dur - t) / 0.05);
-    d[i] = Math.max(-1, Math.min(1, s / 2.8 * env)) * 0.92;
+    d[i] = s;
+  }
+  let peak = 0;
+  for (const v of d) peak = Math.max(peak, Math.abs(v));
+  for (let i = 0; i < n; i++) d[i] = d[i] / (peak || 1) * 0.9;
+  return d;
+}
+
+let audio = null;
+const buffers = {}, voices = new Map();   // clé du klaxon -> { src, gain, t0, min }
+function initAudio() {
+  if (audio) { audio.resume(); return; }
+  audio = new (window.AudioContext || window.webkitAudioContext)();
+  for (const k in SOUNDS) {
+    const b = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+    b.copyToChannel(synth(k, audio.sampleRate), 0);
+    buffers[k] = b;
   }
 }
-function play() {
-  if (!audio) return;
+function startVoice(key, sound) {
+  if (!audio || voices.has(key)) return;
   if (audio.state === "suspended") audio.resume();
-  const src = audio.createBufferSource();
-  src.buffer = hornBuf;
-  src.connect(audio.destination);
-  src.start();
+  const now = audio.currentTime, src = audio.createBufferSource(), gain = audio.createGain();
+  src.buffer = buffers[soundOf(sound)];
+  src.loop = true;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(1, now + 0.01);
+  gain.gain.setValueAtTime(1, now + MAX_HOLD - 0.05);
+  gain.gain.linearRampToValueAtTime(0, now + MAX_HOLD);
+  src.connect(gain).connect(audio.destination);
+  src.start(now);
+  src.stop(now + MAX_HOLD);
+  src.onended = () => { if (voices.get(key)?.src === src) voices.delete(key); };
+  voices.set(key, { src, gain, t0: now, min: SOUNDS[soundOf(sound)].min });
+}
+function endVoice(key) {
+  const v = voices.get(key);
+  if (!v) return;
+  voices.delete(key);
+  const t = Math.max(audio.currentTime, v.t0 + v.min);  // un clic joue au moins le son en entier
+  v.gain.gain.cancelScheduledValues(t);
+  v.gain.gain.setValueAtTime(1, t);
+  v.gain.gain.linearRampToValueAtTime(0, t + 0.04);
+  v.src.stop(t + 0.05);
 }
 
 // ---------- salon ----------
@@ -219,11 +327,13 @@ async function roomBase(room) {
   return APP_PREFIX + [...hash].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 20) + "/";
 }
 const myName = () => ($("name").value.trim() || "Anonyme").slice(0, 24);
+const mySound = () => soundOf(store.get("sound"));
+const presence = () => JSON.stringify({ name: myName(), sound: mySound() });
 
 function refresh() {
   online = links.some(l => l.online);
   peers = new Map();
-  for (const l of links) for (const [pid, n] of l.peers) peers.set(pid, n);
+  for (const l of links) for (const [pid, p] of l.peers) peers.set(pid, p);
   render();
 }
 
@@ -240,7 +350,7 @@ function makeLink(url, myBase) {
   c.on("connect", () => {
     link.online = true;
     c.subscribe(myBase + "#", { qos: 1 });
-    c.publish(myBase + "p/" + myId, JSON.stringify({ name: myName() }), { qos: 1, retain: true });
+    c.publish(myBase + "p/" + myId, presence(), { qos: 1, retain: true });
     refresh();
   });
   c.on("close", () => { link.online = false; link.peers.clear(); refresh(); });
@@ -253,21 +363,29 @@ function makeLink(url, myBase) {
       if (pid === myId) return;
       if (!payload.length) link.peers.delete(pid);
       else {
-        try { link.peers.set(pid, String(JSON.parse(payload.toString()).name ?? "?").slice(0, 24)); }
-        catch { return; }
+        try {
+          const p = JSON.parse(payload.toString());
+          link.peers.set(pid, { name: String(p.name ?? "?").slice(0, 24), sound: soundOf(p.sound) });
+        } catch { return; }
       }
       refresh();
-    } else if (sub === "h") {
-      let m;
-      try { m = JSON.parse(payload.toString()); } catch { return; }
-      if (!m || m.id === myId || !(m.to == null || m.to === myId)) return;
-      if (m.n != null) {  // sans numéro : ancienne version, un seul serveur, pas de doublon
-        const key = m.id + "/" + m.n, now = Date.now();
-        if (seen.has(key)) return;
-        seen.set(key, now);
-        if (seen.size > 500) for (const [k, t] of seen) if (now - t > 60000) seen.delete(k);
-      }
-      honkedBy(String(m.name ?? "?").slice(0, 24), m.to == null);
+      return;
+    }
+    let m;
+    try { m = JSON.parse(payload.toString()); } catch { return; }
+    if (!m || m.id === myId) return;
+    if (sub === "h") {
+      if (!(m.to == null || m.to === myId)) return;
+      const key = m.id + "/" + (m.n ?? Math.random());   // sans numéro : ancienne version, un seul serveur
+      if (seen.has(key)) return;
+      const now = Date.now();
+      seen.set(key, now);
+      if (seen.size > 500) for (const [k, t] of seen) if (now - t > 60000) seen.delete(k);
+      startVoice(key, m.sound);
+      if (!m.hold) endVoice(key);                        // ancienne version : un coup simple
+      honkedBy(m.id, String(m.name ?? "?").slice(0, 24), m.to == null);
+    } else if (sub === "he") {
+      endVoice(m.id + "/" + m.n);
     }
   });
   return link;
@@ -280,6 +398,7 @@ async function join(room) {
     else c.end(true);
   }
   links = [];
+  riposte = null;
   refresh();
   base = await roomBase(room);
   links = BROKERS.map(url => makeLink(url, base));
@@ -289,28 +408,50 @@ async function join(room) {
 function sendAll(sub, payload, opts) {
   for (const l of links) if (l.online) l.client.publish(base + sub, payload, opts);
 }
+const announce = () => sendAll("p/" + myId, presence(), { qos: 1, retain: true });
 
-function announce() {
-  sendAll("p/" + myId, JSON.stringify({ name: myName() }), { qos: 1, retain: true });
+// ---------- klaxonner : appuyer = ça klaxonne, relâcher = ça s'arrête ----------
+let holding = null;   // { n, btn, timer }
+function press(to, btn) {
+  if (to === undefined || holding || !online || !peers.size) return;  // undefined : riposte sans personne
+  const now = Date.now();
+  if (now - lastPress < COOLDOWN) return;
+  lastPress = now;
+  const n = START + "-" + (++seq);
+  sendAll("h", JSON.stringify({ id: myId, name: myName(), to: to ?? null, n, sound: mySound(), hold: true }), { qos: 0 });
+  startVoice("moi/" + n, mySound());   // on s'entend klaxonner aussi
+  btn?.classList.add("down");
+  holding = { n, btn, timer: setTimeout(release, MAX_HOLD * 1000) };
+  if (riposte && to === riposte.id) clearRiposte();
 }
-
-function honk(to, btn) {
-  if (!online || !peers.size) return;
-  const key = to ?? "*", now = Date.now();
-  if (now - (lastHonk.get(key) || 0) < COOLDOWN) return;
-  lastHonk.set(key, now);
-  seq += 1;
-  sendAll("h", JSON.stringify({ id: myId, name: myName(), to: to ?? null, n: START + "-" + seq }), { qos: 0 });
-  play(); // on s'entend klaxonner aussi
-  if (btn) { btn.classList.remove("hit"); void btn.offsetWidth; btn.classList.add("hit"); }
+function release() {
+  if (!holding) return;
+  const { n, btn, timer } = holding;
+  holding = null;
+  clearTimeout(timer);
+  sendAll("he", JSON.stringify({ id: myId, n }), { qos: 0 });
+  endVoice("moi/" + n);
+  btn?.classList.remove("down");
 }
+function bindHold(btn, to) {
+  btn.addEventListener("pointerdown", (e) => { if (e.button === 0) { btn.setPointerCapture?.(e.pointerId); press(to(), btn); } });
+  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) btn.addEventListener(ev, release);
+  btn.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && !e.repeat) { e.preventDefault(); e.stopPropagation(); press(to(), btn); }
+  });
+  btn.addEventListener("keyup", (e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); release(); } });
+  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  btn.addEventListener("mousedown", (e) => e.preventDefault());  // pas de focus au clic : espace reste « tout le monde »
+}
+window.addEventListener("blur", release);
 
-function honkedBy(who, everyone) {
-  play();
+function honkedBy(pid, who, everyone) {
   document.body.classList.add("flash");
   const text = "📯 " + who + (everyone ? " klaxonne tout le monde !" : " te klaxonne !");
   $("status").textContent = text;
   navigator.vibrate?.(300);
+  riposte = { id: pid, name: who, until: Date.now() + RIPOSTE };
+  setTimeout(() => { if (riposte && Date.now() >= riposte.until) clearRiposte(); }, RIPOSTE + 50);
   if (document.hidden) {
     document.title = "📯 " + who + " !";
     if ("Notification" in window && Notification.permission === "granted") {
@@ -319,33 +460,72 @@ function honkedBy(who, everyone) {
   }
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => { document.body.classList.remove("flash"); flashTimer = 0; render(); }, 1200);
+  render();
 }
+function clearRiposte() { riposte = null; render(); }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) document.title = "Klaxon"; });
 
 // ---------- rendu ----------
+// Les boutons ne sont recréés que si quelqu'un arrive ou part : un klaxon long en cours n'est pas coupé.
 let shown = "";
 function render() {
-  const list = [...peers].sort((a, b) => a[1].localeCompare(b[1], "fr", { sensitivity: "base" }));
+  const list = [...peers].sort((a, b) => a[1].name.localeCompare(b[1].name, "fr", { sensitivity: "base" }));
+  if (riposte && !peers.has(riposte.id)) riposte = null;
+  const st = $("status");
+  st.classList.toggle("riposte", !!riposte);
   if (!flashTimer) {
-    $("status").textContent =
+    st.textContent =
       !online ? "Connexion…" :
+      riposte ? "↩ Riposter à " + riposte.name :
       !list.length ? "Personne d'autre dans le salon" :
       (list.length + 1) + " dans le salon";
   }
   $("all").disabled = !(online && list.length);
-  const key = JSON.stringify(list);
-  if (key === shown) return;
-  shown = key;
   const box = $("peers");
+  const order = list.map(([pid]) => pid).join(",");
+  if (order !== shown) {
+    shown = order;
+    if (holding && box.contains(holding.btn)) release();
+    box.replaceChildren();
+    const cols = list.length <= 1 ? 1 : list.length <= 6 ? 2 : 3;
+    box.style.setProperty("--cols", cols);
+    box.style.setProperty("--rows", Math.max(1, Math.ceil(list.length / cols)));
+    for (const [pid] of list) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.pid = pid;
+      b.innerHTML = '<span></span><span class="e"></span>';
+      bindHold(b, () => pid);
+      box.append(b);
+    }
+  }
+  list.forEach(([pid, p], i) => {
+    const b = box.children[i];
+    b.firstChild.textContent = p.name;
+    b.lastChild.textContent = SOUNDS[p.sound].e;
+    b.classList.toggle("riposte", riposte?.id === pid);
+  });
+}
+
+function renderSounds() {
+  const box = $("sounds");
   box.replaceChildren();
-  const cols = list.length <= 1 ? 1 : list.length <= 6 ? 2 : 3;
-  box.style.setProperty("--cols", cols);
-  box.style.setProperty("--rows", Math.max(1, Math.ceil(list.length / cols)));
-  for (const [pid, pname] of list) {
+  for (const [k, s] of Object.entries(SOUNDS)) {
     const b = document.createElement("button");
     b.type = "button";
-    b.textContent = pname;
-    b.addEventListener("click", () => honk(pid, b));
+    b.setAttribute("aria-pressed", String(k === mySound()));
+    b.innerHTML = '<span class="e"></span><span></span>';
+    b.firstChild.textContent = s.e;
+    b.lastChild.textContent = s.label;
+    b.addEventListener("mousedown", (e) => e.preventDefault());  // garde espace = « tout le monde »
+    b.addEventListener("click", () => {
+      store.set("sound", k);
+      for (const o of box.children) o.setAttribute("aria-pressed", String(o === b));
+      const key = "essai/" + Date.now();
+      startVoice(key, k);
+      endVoice(key);
+      announce();
+    });
     box.append(b);
   }
 }
@@ -360,6 +540,7 @@ function enterRoom(name, room) {
   store.set("room", room);
   $("gate").hidden = true;
   $("room").hidden = false;
+  history.replaceState(null, "", "#" + encodeURIComponent(room));
   join(room);
 }
 
@@ -367,6 +548,7 @@ const hashRoom = decodeURIComponent(location.hash.slice(1));
 $("gate-name").value = store.get("name");
 $("gate-room").value = hashRoom || store.get("room");
 ($("gate-name").value ? $("gate-room").value ? $("enter") : $("gate-room") : $("gate-name")).focus();
+renderSounds();
 
 $("gate-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -381,19 +563,39 @@ $("room-input").addEventListener("change", () => {
   if (!room) { $("room-input").value = store.get("room"); return; }
   if (room === store.get("room")) return;
   store.set("room", room);
+  history.replaceState(null, "", "#" + encodeURIComponent(room));
   join(room);
 });
 
-$("all").addEventListener("click", (e) => honk(null, e.currentTarget));
+$("invite").addEventListener("mousedown", (e) => e.preventDefault());
+$("invite").addEventListener("click", async () => {
+  const link = SITE + "#" + encodeURIComponent($("room-input").value.trim());
+  const btn = $("invite");
+  try {
+    await navigator.clipboard.writeText(link);
+  } catch {
+    const tmp = document.createElement("textarea");
+    tmp.value = link;
+    document.body.append(tmp);
+    tmp.select();
+    try { document.execCommand("copy"); } catch {}
+    tmp.remove();
+  }
+  btn.textContent = "✓ Lien copié";
+  btn.classList.add("ok");
+  setTimeout(() => { btn.textContent = "🔗 Inviter"; btn.classList.remove("ok"); }, 1600);
+});
+
+bindHold($("all"), () => null);
+bindHold($("status"), () => riposte?.id ?? undefined);
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && !$("room").hidden && !(e.target instanceof HTMLInputElement)) {
+  if (e.code === "Space" && !e.repeat && !$("room").hidden && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement)) {
     e.preventDefault();
-    honk(null, $("all"));
+    press(null, $("all"));
   }
 });
-window.addEventListener("pagehide", () => {
-  sendAll("p/" + myId, "", { qos: 1, retain: true });
-});
+document.addEventListener("keyup", (e) => { if (e.code === "Space") release(); });
+window.addEventListener("pagehide", () => sendAll("p/" + myId, "", { qos: 1, retain: true }));
 
 if ("serviceWorker" in navigator && location.protocol === "https:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
