@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Klaxon</title>
+<meta name="description" content="Klaxonne tes potes d'ordinateur à ordinateur.">
+<meta name="theme-color" content="#15171c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #15171c;
+    --field: #23262e;
+    --fg: #f2f2f2;
+    --muted: #8a8f9e;
+    --yellow: #ffc629;
+    --yellow-hi: #ffdb70;
+    --blue: #2f6fed;
+    --blue-hi: #5a8cf5;
+    --red: #e8412c;
+    --font: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    transition: background-color .15s;
+    overflow: hidden;
+  }
+  body.flash { background: var(--red); }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; border: 0; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+
+  .screen {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(8px, 1.6vh, 16px);
+    padding: max(16px, env(safe-area-inset-top)) max(16px, 3vw) max(16px, env(safe-area-inset-bottom));
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  /* --- porte d'entrée : le clic sur ENTRER débloque aussi le son --- */
+  #gate { justify-content: center; }
+  #gate h1 {
+    margin: 0 0 clamp(8px, 3vh, 32px);
+    font-size: clamp(48px, 12vh, 120px);
+    font-weight: 900;
+    letter-spacing: -.02em;
+    line-height: 1;
+    color: var(--yellow);
+    text-align: center;
+  }
+  .fields { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
+  .fields label { color: var(--muted); font-size: clamp(14px, 2.2vh, 20px); }
+  .fields input {
+    min-width: 0;
+    background: var(--field);
+    border: 0;
+    border-radius: 6px;
+    padding: .35em .5em;
+    font-weight: 700;
+    font-size: clamp(16px, 2.6vh, 24px);
+  }
+  #gate .fields input { font-size: clamp(20px, 4vh, 34px); }
+  #enter {
+    margin-top: clamp(8px, 3vh, 28px);
+    background: var(--yellow);
+    color: #1a1a1a;
+    font-weight: 900;
+    font-size: clamp(26px, 6vh, 52px);
+    padding: .45em;
+    border-radius: 10px;
+  }
+  #enter:hover { background: var(--yellow-hi); }
+  #enter:disabled { opacity: .4; cursor: default; }
+
+  /* --- salon --- */
+  #status {
+    text-align: center;
+    font-weight: 700;
+    font-size: clamp(18px, 3.4vh, 30px);
+    color: var(--muted);
+    min-height: 1.3em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  body.flash #status { color: var(--fg); }
+  #all {
+    background: var(--yellow);
+    color: #1a1a1a;
+    font-weight: 900;
+    font-size: clamp(24px, 5.5vh, 48px);
+    padding: clamp(12px, 3vh, 30px) 12px;
+    border-radius: 10px;
+  }
+  #all:hover:not(:disabled) { background: var(--yellow-hi); }
+  #all:disabled { opacity: .35; cursor: default; }
+  #peers {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(var(--cols, 1), 1fr);
+    grid-auto-rows: 1fr;
+  }
+  #peers button {
+    min-height: 0;
+    background: var(--blue);
+    color: #fff;
+    font-weight: 800;
+    font-size: clamp(18px, calc(22vh / var(--rows, 1)), 44px);
+    border-radius: 10px;
+    padding: 6px 10px;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  #peers button:hover { background: var(--blue-hi); }
+  #peers button.hit { animation: hit .25s; }
+  @keyframes hit { 50% { transform: scale(.95); } }
+  @media (prefers-reduced-motion: reduce) {
+    body, #peers button.hit { transition: none; animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<main id="gate" class="screen">
+  <h1>KLAXON</h1>
+  <form id="gate-form" class="fields" autocomplete="off">
+    <label for="gate-name">Moi</label>
+    <input id="gate-name" maxlength="24" required>
+    <label for="gate-room">Salon</label>
+    <input id="gate-room" maxlength="60" required>
+    <button id="enter" type="submit" style="grid-column: 1 / -1">ENTRER</button>
+  </form>
+</main>
+
+<main id="room" class="screen" hidden>
+  <form id="room-form" class="fields" autocomplete="off">
+    <label for="name">Moi</label>
+    <input id="name" maxlength="24">
+    <label for="room-input">Salon</label>
+    <input id="room-input" maxlength="60">
+  </form>
+  <div id="status" aria-live="polite"></div>
+  <button id="all" type="button" disabled>📯 TOUT LE MONDE</button>
+  <div id="peers"></div>
+</main>
+
+<script src="mqtt.min.js"></script>
+<script>
+"use strict";
+// Même protocole que l'appli Windows (klaxon.py) : mêmes salons, ils se voient entre eux.
+const BROKER = "wss://broker.emqx.io:8084/mqtt";
+const APP_PREFIX = "klaxon-stlkm/v1/";
+const COOLDOWN = 350;
+
+const $ = (id) => document.getElementById(id);
+const myId = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, "0")).join("");
+
+const store = {
+  get(k) { try { return localStorage.getItem("klaxon." + k) || ""; } catch { return ""; } },
+  set(k, v) { try { localStorage.setItem("klaxon." + k, v); } catch {} },
+};
+
+let client = null, base = "", online = false;
+let peers = new Map();          // id -> nom
+let flashTimer = 0, lastHonk = new Map();
+
+// ---------- son : même klaxon synthétisé que l'appli ----------
+let audio = null, hornBuf = null;
+function initAudio() {
+  if (audio) { audio.resume(); return; }
+  audio = new (window.AudioContext || window.webkitAudioContext)();
+  const rate = audio.sampleRate, dur = 0.6, n = Math.floor(rate * dur);
+  hornBuf = audio.createBuffer(1, n, rate);
+  const d = hornBuf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    let s = 0;
+    for (const f of [415, 523]) {
+      s += Math.tanh(4 * Math.sin(2 * Math.PI * f * t));
+      s += 0.3 * Math.sin(2 * Math.PI * 2 * f * t);
+    }
+    const env = Math.min(1, t / 0.02) * Math.min(1, (dur - t) / 0.05);
+    d[i] = Math.max(-1, Math.min(1, s / 2.8 * env)) * 0.92;
+  }
+}
+function play() {
+  if (!audio) return;
+  if (audio.state === "suspended") audio.resume();
+  const src = audio.createBufferSource();
+  src.buffer = hornBuf;
+  src.connect(audio.destination);
+  src.start();
+}
+
+// ---------- salon ----------
+async function roomBase(room) {
+  // identique à hashlib.sha256(room.strip().lower()).hexdigest()[:20]
+  const bytes = new TextEncoder().encode(room.trim().toLowerCase());
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return APP_PREFIX + [...hash].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 20) + "/";
+}
+const myName = () => ($("name").value.trim() || "Anonyme").slice(0, 24);
+
+async function join(room) {
+  if (client) {
+    const old = client;
+    old.publish(base + "p/" + myId, "", { qos: 1, retain: true }, () => old.end());
+  }
+  peers.clear(); online = false;
+  base = await roomBase(room);
+  const myBase = base;
+  client = mqtt.connect(BROKER, {
+    clientId: "klaxon-" + myId,
+    keepalive: 15,
+    reconnectPeriod: 2000,
+    connectTimeout: 10000,
+    clean: true,
+    will: { topic: base + "p/" + myId, payload: "", qos: 1, retain: true },
+  });
+  const c = client;
+  c.on("connect", () => {
+    if (c !== client) return;
+    online = true;
+    c.subscribe(myBase + "#", { qos: 1 });
+    announce();
+    render();
+  });
+  c.on("close", () => {
+    if (c !== client) return;
+    online = false; peers.clear(); render();
+  });
+  c.on("message", (topic, payload) => {
+    if (c !== client || !topic.startsWith(myBase)) return;
+    const sub = topic.slice(myBase.length);
+    if (sub.startsWith("p/")) {
+      const pid = sub.slice(2);
+      if (pid === myId) return;
+      if (!payload.length) peers.delete(pid);
+      else {
+        try { peers.set(pid, String(JSON.parse(payload.toString()).name ?? "?").slice(0, 24)); }
+        catch { return; }
+      }
+      render();
+    } else if (sub === "h") {
+      let m;
+      try { m = JSON.parse(payload.toString()); } catch { return; }
+      if (m.id !== myId && (m.to == null || m.to === myId)) honkedBy(String(m.name ?? "?").slice(0, 24), m.to == null);
+    }
+  });
+  render();
+}
+
+function announce() {
+  if (client && online) client.publish(base + "p/" + myId, JSON.stringify({ name: myName() }), { qos: 1, retain: true });
+}
+
+function honk(to, btn) {
+  if (!client || !online || !peers.size) return;
+  const key = to ?? "*", now = Date.now();
+  if (now - (lastHonk.get(key) || 0) < COOLDOWN) return;
+  lastHonk.set(key, now);
+  client.publish(base + "h", JSON.stringify({ id: myId, name: myName(), to: to ?? null }), { qos: 0 });
+  play(); // on s'entend klaxonner aussi
+  if (btn) { btn.classList.remove("hit"); void btn.offsetWidth; btn.classList.add("hit"); }
+}
+
+function honkedBy(who, everyone) {
+  play();
+  document.body.classList.add("flash");
+  const text = "📯 " + who + (everyone ? " klaxonne tout le monde !" : " te klaxonne !");
+  $("status").textContent = text;
+  navigator.vibrate?.(300);
+  if (document.hidden) {
+    document.title = "📯 " + who + " !";
+    if ("Notification" in window && Notification.permission === "granted") {
+      try { new Notification("Klaxon", { body: text.slice(3), icon: "icon.svg", tag: "klaxon" }); } catch {}
+    }
+  }
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { document.body.classList.remove("flash"); flashTimer = 0; render(); }, 1200);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) document.title = "Klaxon"; });
+
+// ---------- rendu ----------
+let shown = "";
+function render() {
+  const list = [...peers].sort((a, b) => a[1].localeCompare(b[1], "fr", { sensitivity: "base" }));
+  if (!flashTimer) {
+    $("status").textContent =
+      !online ? "Connexion…" :
+      !list.length ? "Personne d'autre dans le salon" :
+      (list.length + 1) + " dans le salon";
+  }
+  $("all").disabled = !(online && list.length);
+  const key = JSON.stringify(list);
+  if (key === shown) return;
+  shown = key;
+  const box = $("peers");
+  box.replaceChildren();
+  const cols = list.length <= 1 ? 1 : list.length <= 6 ? 2 : 3;
+  box.style.setProperty("--cols", cols);
+  box.style.setProperty("--rows", Math.max(1, Math.ceil(list.length / cols)));
+  for (const [pid, pname] of list) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = pname;
+    b.addEventListener("click", () => honk(pid, b));
+    box.append(b);
+  }
+}
+
+// ---------- champs ----------
+function enterRoom(name, room) {
+  initAudio();
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+  $("name").value = name;
+  $("room-input").value = room;
+  store.set("name", name);
+  store.set("room", room);
+  $("gate").hidden = true;
+  $("room").hidden = false;
+  join(room);
+}
+
+const hashRoom = decodeURIComponent(location.hash.slice(1));
+$("gate-name").value = store.get("name");
+$("gate-room").value = hashRoom || store.get("room");
+($("gate-name").value ? $("gate-room").value ? $("enter") : $("gate-room") : $("gate-name")).focus();
+
+$("gate-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("gate-name").value.trim().slice(0, 24), room = $("gate-room").value.trim();
+  if (name && room) enterRoom(name, room);
+});
+
+$("room-form").addEventListener("submit", (e) => { e.preventDefault(); document.activeElement.blur(); });
+$("name").addEventListener("change", () => { store.set("name", myName()); announce(); });
+$("room-input").addEventListener("change", () => {
+  const room = $("room-input").value.trim();
+  if (!room) { $("room-input").value = store.get("room"); return; }
+  if (room === store.get("room")) return;
+  store.set("room", room);
+  join(room);
+});
+
+$("all").addEventListener("click", (e) => honk(null, e.currentTarget));
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && !$("room").hidden && !(e.target instanceof HTMLInputElement)) {
+    e.preventDefault();
+    honk(null, $("all"));
+  }
+});
+window.addEventListener("pagehide", () => {
+  if (client?.connected) client.publish(base + "p/" + myId, "", { qos: 1, retain: true });
+});
+
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
