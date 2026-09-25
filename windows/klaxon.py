@@ -1,7 +1,8 @@
 """Klaxon — klaxonner d'ordinateur à ordinateur par Internet (2 à 6 personnes, ou plus).
 
 Tout le monde met le même nom de salon : ceux qui sont dans le salon apparaissent tout seuls.
-Passe par un serveur MQTT public (broker.emqx.io), rien à héberger, aucun compte.
+Passe par trois serveurs MQTT publics à la fois (si l'un rame, les autres suffisent),
+rien à héberger, aucun compte. Même protocole que la version navigateur (index.html).
 """
 import hashlib
 import json
@@ -19,10 +20,14 @@ import wave
 
 import paho.mqtt.client as mqtt
 
-BROKER = "broker.emqx.io"
-# même serveur, deux portes d'entrée : TLS direct, sinon WebSocket sécurisé (passe mieux les pare-feux)
-ROUTES = [(8883, "tcp"), (8084, "websockets")]
+# chaque serveur : deux portes d'entrée, TLS direct puis WebSocket sécurisé (passe mieux les pare-feux)
+BROKERS = [
+    ("broker.emqx.io", [(8883, "tcp", None), (8084, "websockets", "/mqtt")]),
+    ("broker.hivemq.com", [(8883, "tcp", None), (8884, "websockets", "/mqtt")]),
+    ("test.mosquitto.org", [(8886, "tcp", None), (8081, "websockets", "/")]),
+]
 APP_PREFIX = "klaxon-stlkm/v1/"
+START = int(time.time() * 1000)  # distingue les klaxons de deux lancements successifs
 COOLDOWN = 0.35        # anti-spam, par destinataire
 
 CONFIG = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Klaxon", "config.json")
@@ -83,28 +88,23 @@ def room_base(room):
     return APP_PREFIX + hashlib.sha256(room.strip().lower().encode()).hexdigest()[:20] + "/"
 
 
-class Net:
-    """Présence : chaque client publie un message retenu sur <salon>/p/<id> ;
-    le serveur l'efface tout seul (testament MQTT) si le client disparaît.
-    Klaxons : messages sur <salon>/h."""
+class Link:
+    """Une connexion à un serveur. Présence : message retenu sur <salon>/p/<id>, que le serveur
+    efface tout seul (testament MQTT) si le client disparaît. Klaxons : messages sur <salon>/h."""
 
-    def __init__(self, my_id, events, name, room):
-        self.my_id = my_id
-        self.events = events
-        self.name = name
-        self.base = room_base(room)
-        self.peers = {}  # id -> nom
-        self.lock = threading.Lock()
+    def __init__(self, net, host, routes):
+        self.net, self.host, self.routes = net, host, routes
         self.client = None
+        self.online = False
+        self.peers = {}  # id -> nom, vus sur ce serveur
         threading.Thread(target=self._connect_loop, daemon=True).start()
 
-    # --- connexion -------------------------------------------------------
-    def _make_client(self, transport):
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="klaxon-" + self.my_id, transport=transport)
-        if transport == "websockets":
-            c.ws_set_options(path="/mqtt")
+    def _make_client(self, transport, path):
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="klaxon-" + self.net.my_id, transport=transport)
+        if path:
+            c.ws_set_options(path=path)
         c.tls_set()
-        c.will_set(self.base + "p/" + self.my_id, b"", qos=1, retain=True)
+        c.will_set(self.net.base + "p/" + self.net.my_id, b"", qos=1, retain=True)
         c.reconnect_delay_set(1, 10)
         c.on_connect = self._on_connect
         c.on_disconnect = self._on_disconnect
@@ -114,14 +114,13 @@ class Net:
     def _connect_loop(self):
         i = 0
         while True:
-            port, transport = ROUTES[i % len(ROUTES)]
-            c = self._make_client(transport)
+            port, transport, path = self.routes[i % len(self.routes)]
+            c = self._make_client(transport, path)
             try:
-                c.connect(BROKER, port, keepalive=15)
+                c.connect(self.host, port, keepalive=15)
             except (OSError, ValueError):
                 i += 1
-                self.events.put(("conn", False))
-                time.sleep(1 if i % len(ROUTES) else 3)
+                time.sleep(1 if i % len(self.routes) else 3)
                 continue
             self.client = c
             c.loop_forever(retry_first_connection=False)  # gère les reconnexions ensuite
@@ -129,33 +128,28 @@ class Net:
 
     def _on_connect(self, client, userdata, flags, rc, props=None):
         if rc.is_failure:
-            self.events.put(("conn", False))
             return
-        client.subscribe(self.base + "#", qos=1)
-        self._announce(client)
-        self.events.put(("conn", True))
+        self.online = True
+        client.subscribe(self.net.base + "#", qos=1)
+        self.announce()
+        self.net.changed()
 
     def _on_disconnect(self, client, userdata, flags, rc, props=None):
-        with self.lock:
+        self.online = False
+        with self.net.lock:
             self.peers.clear()
-        self.events.put(("conn", False))
-        self.events.put(("peers",))
+        self.net.changed()
 
-    def _announce(self, client=None):
-        c = client or self.client
-        if c:
-            c.publish(self.base + "p/" + self.my_id, json.dumps({"name": self.name}), qos=1, retain=True)
-
-    # --- réception -------------------------------------------------------
     def _on_message(self, client, userdata, msg):
-        if not msg.topic.startswith(self.base):
+        base = self.net.base
+        if not msg.topic.startswith(base):
             return  # reste d'un ancien salon
-        sub = msg.topic[len(self.base):]
+        sub = msg.topic[len(base):]
         if sub.startswith("p/"):
             pid = sub[2:]
-            if pid == self.my_id:
+            if pid == self.net.my_id:
                 return
-            with self.lock:
+            with self.net.lock:
                 if not msg.payload:
                     self.peers.pop(pid, None)
                 else:
@@ -163,49 +157,111 @@ class Net:
                         self.peers[pid] = str(json.loads(msg.payload).get("name", "?"))[:24]
                     except (ValueError, AttributeError):
                         return
-            self.events.put(("peers",))
+            self.net.changed()
         elif sub == "h":
             try:
-                data = json.loads(msg.payload)
-            except ValueError:
-                return
-            if data.get("id") != self.my_id and data.get("to") in (None, self.my_id):
-                self.events.put(("honk", str(data.get("name", "?"))[:24], data.get("to") is None))
+                self.net.received(json.loads(msg.payload))
+            except (ValueError, AttributeError):
+                pass
 
-    # --- actions ---------------------------------------------------------
+    def publish(self, sub, payload, qos=0, retain=False):
+        if self.client and self.online:
+            return self.client.publish(self.net.base + sub, payload, qos=qos, retain=retain)
+
+    def announce(self):
+        self.publish("p/" + self.net.my_id, json.dumps({"name": self.net.name}), qos=1, retain=True)
+
+    def switch_room(self, old):
+        with self.net.lock:
+            self.peers.clear()
+        c = self.client
+        if c:
+            # le testament n'est transmis qu'à la connexion : on se reconnecte, on_connect fait le reste
+            if self.online:
+                c.publish(old + "p/" + self.net.my_id, b"", qos=1, retain=True)
+            c.will_set(self.net.base + "p/" + self.net.my_id, b"", qos=1, retain=True)
+            try:
+                c.reconnect()
+            except (OSError, ValueError):
+                pass
+
+    def close(self):
+        info = self.publish("p/" + self.net.my_id, b"", qos=1, retain=True)
+        if info:
+            info.wait_for_publish(1.5)
+        if self.client:
+            self.client.disconnect()
+
+
+class Net:
+    """Parle aux trois serveurs à la fois : on envoie partout, on fusionne ce qu'on reçoit."""
+
+    def __init__(self, my_id, events, name, room):
+        self.my_id = my_id
+        self.events = events
+        self.name = name
+        self.base = room_base(room)
+        self.lock = threading.Lock()
+        self.seq = 0
+        self.seen_msgs = {}  # (id, n) -> heure : un klaxon arrive une fois par serveur
+        self.links = [Link(self, host, routes) for host, routes in BROKERS]
+
+    def changed(self):
+        self.events.put(("conn", self.online_count()))
+        self.events.put(("peers",))
+
+    def online_count(self):
+        return sum(l.online for l in self.links)
+
+    def received(self, data):
+        pid = data.get("id")
+        if not pid or pid == self.my_id or data.get("to") not in (None, self.my_id):
+            return
+        key, now = (pid, data.get("n")), time.time()
+        with self.lock:
+            if key[1] is not None:  # sans numéro : ancienne version, un seul serveur, pas de doublon
+                if key in self.seen_msgs:
+                    return
+                self.seen_msgs[key] = now
+                if len(self.seen_msgs) > 500:
+                    self.seen_msgs = {k: v for k, v in self.seen_msgs.items() if now - v < 60}
+        self.events.put(("honk", str(data.get("name", "?"))[:24], data.get("to") is None))
+
     def honk(self, to=None):
         """to=None : tout le monde, sinon l'id d'un pair."""
-        if self.client:
-            self.client.publish(self.base + "h", json.dumps({"id": self.my_id, "name": self.name, "to": to}), qos=0)
+        self.seq += 1
+        # n rend chaque klaxon unique, même d'un lancement à l'autre
+        payload = json.dumps({"id": self.my_id, "name": self.name, "to": to, "n": "%d-%d" % (START, self.seq)})
+        for l in self.links:
+            l.publish("h", payload)
 
     def set_name(self, name):
         self.name = name
-        self._announce()
+        for l in self.links:
+            l.announce()
 
     def set_room(self, room):
         new = room_base(room)
         if new == self.base:
             return
         old, self.base = self.base, new
-        with self.lock:
-            self.peers.clear()
-        self.events.put(("peers",))
-        c = self.client
-        if c:
-            # le testament n'est transmis qu'à la connexion : on se reconnecte, on_connect fait le reste
-            c.publish(old + "p/" + self.my_id, b"", qos=1, retain=True)
-            c.will_set(new + "p/" + self.my_id, b"", qos=1, retain=True)
-            c.reconnect()
+        for l in self.links:
+            l.switch_room(old)
+        self.changed()
 
     def close(self):
-        c = self.client
-        if c:
-            c.publish(self.base + "p/" + self.my_id, b"", qos=1, retain=True).wait_for_publish(1.5)
-            c.disconnect()
+        threads = [threading.Thread(target=l.close) for l in self.links]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(2)
 
     def snapshot(self):
         with self.lock:
-            return sorted(self.peers.items(), key=lambda x: x[1].lower())
+            merged = {}
+            for l in self.links:
+                merged.update(l.peers)
+        return sorted(merged.items(), key=lambda x: x[1].lower())
 
 
 class App:
@@ -304,7 +360,7 @@ class App:
                 if ev[0] == "peers":
                     self.render_peers()
                 elif ev[0] == "conn":
-                    self.online = ev[1]
+                    self.online = ev[1] > 0
                     self.render_peers(force=True)
                 elif ev[0] == "honk":
                     self.honked_by(ev[1], ev[2])

@@ -11,6 +11,8 @@ un clic sur un nom le klaxonne, le bouton jaune klaxonne tout le salon.
 - **Windows** : `windows/klaxon.py`, ou `windows/build.bat` pour fabriquer
   `Klaxon.exe`. Mêmes salons que la version navigateur.
 
-Les messages passent par le serveur MQTT public `broker.emqx.io`. Le nom du
-salon est haché avant d'être envoyé, mais quelqu'un qui le devine peut vous
-klaxonner : prenez un nom peu courant.
+Les messages passent par trois serveurs MQTT publics à la fois
+(`broker.emqx.io`, `broker.hivemq.com`, `test.mosquitto.org`) : si l'un rame
+ou tombe, les deux autres suffisent. Le nom du salon est haché avant d'être
+envoyé, mais quelqu'un qui le devine peut vous klaxonner : prenez un nom peu
+courant.

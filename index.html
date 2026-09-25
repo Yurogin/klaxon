@@ -159,8 +159,13 @@
 <script src="mqtt.min.js"></script>
 <script>
 "use strict";
-// Même protocole que l'appli Windows (klaxon.py) : mêmes salons, ils se voient entre eux.
-const BROKER = "wss://broker.emqx.io:8084/mqtt";
+// Même protocole que l'appli Windows (windows/klaxon.py) : mêmes salons, ils se voient entre eux.
+// Trois serveurs publics à la fois : on envoie partout, on fusionne ce qu'on reçoit.
+const BROKERS = [
+  "wss://broker.emqx.io:8084/mqtt",
+  "wss://broker.hivemq.com:8884/mqtt",
+  "wss://test.mosquitto.org:8081",
+];
 const APP_PREFIX = "klaxon-stlkm/v1/";
 const COOLDOWN = 350;
 
@@ -172,9 +177,11 @@ const store = {
   set(k, v) { try { localStorage.setItem("klaxon." + k, v); } catch {} },
 };
 
-let client = null, base = "", online = false;
-let peers = new Map();          // id -> nom
+let links = [], base = "", online = false;
+let peers = new Map();          // id -> nom, fusion des trois serveurs
 let flashTimer = 0, lastHonk = new Map();
+let seq = 0, seen = new Map();  // un klaxon arrive une fois par serveur : on n'en joue qu'un
+const START = Date.now();
 
 // ---------- son : même klaxon synthétisé que l'appli ----------
 let audio = null, hornBuf = null;
@@ -213,65 +220,87 @@ async function roomBase(room) {
 }
 const myName = () => ($("name").value.trim() || "Anonyme").slice(0, 24);
 
-async function join(room) {
-  if (client) {
-    const old = client;
-    old.publish(base + "p/" + myId, "", { qos: 1, retain: true }, () => old.end());
-  }
-  peers.clear(); online = false;
-  base = await roomBase(room);
-  const myBase = base;
-  client = mqtt.connect(BROKER, {
+function refresh() {
+  online = links.some(l => l.online);
+  peers = new Map();
+  for (const l of links) for (const [pid, n] of l.peers) peers.set(pid, n);
+  render();
+}
+
+function makeLink(url, myBase) {
+  const link = { online: false, peers: new Map() };
+  const c = link.client = mqtt.connect(url, {
     clientId: "klaxon-" + myId,
     keepalive: 15,
     reconnectPeriod: 2000,
-    connectTimeout: 10000,
+    connectTimeout: 8000,
     clean: true,
-    will: { topic: base + "p/" + myId, payload: "", qos: 1, retain: true },
+    will: { topic: myBase + "p/" + myId, payload: "", qos: 1, retain: true },
   });
-  const c = client;
   c.on("connect", () => {
-    if (c !== client) return;
-    online = true;
+    link.online = true;
     c.subscribe(myBase + "#", { qos: 1 });
-    announce();
-    render();
+    c.publish(myBase + "p/" + myId, JSON.stringify({ name: myName() }), { qos: 1, retain: true });
+    refresh();
   });
-  c.on("close", () => {
-    if (c !== client) return;
-    online = false; peers.clear(); render();
-  });
+  c.on("close", () => { link.online = false; link.peers.clear(); refresh(); });
+  c.on("error", () => {});
   c.on("message", (topic, payload) => {
-    if (c !== client || !topic.startsWith(myBase)) return;
+    if (!topic.startsWith(myBase)) return;
     const sub = topic.slice(myBase.length);
     if (sub.startsWith("p/")) {
       const pid = sub.slice(2);
       if (pid === myId) return;
-      if (!payload.length) peers.delete(pid);
+      if (!payload.length) link.peers.delete(pid);
       else {
-        try { peers.set(pid, String(JSON.parse(payload.toString()).name ?? "?").slice(0, 24)); }
+        try { link.peers.set(pid, String(JSON.parse(payload.toString()).name ?? "?").slice(0, 24)); }
         catch { return; }
       }
-      render();
+      refresh();
     } else if (sub === "h") {
       let m;
       try { m = JSON.parse(payload.toString()); } catch { return; }
-      if (m.id !== myId && (m.to == null || m.to === myId)) honkedBy(String(m.name ?? "?").slice(0, 24), m.to == null);
+      if (!m || m.id === myId || !(m.to == null || m.to === myId)) return;
+      if (m.n != null) {  // sans numéro : ancienne version, un seul serveur, pas de doublon
+        const key = m.id + "/" + m.n, now = Date.now();
+        if (seen.has(key)) return;
+        seen.set(key, now);
+        if (seen.size > 500) for (const [k, t] of seen) if (now - t > 60000) seen.delete(k);
+      }
+      honkedBy(String(m.name ?? "?").slice(0, 24), m.to == null);
     }
   });
-  render();
+  return link;
+}
+
+async function join(room) {
+  for (const l of links) {
+    const c = l.client;
+    if (l.online) c.publish(base + "p/" + myId, "", { qos: 1, retain: true }, () => c.end());
+    else c.end(true);
+  }
+  links = [];
+  refresh();
+  base = await roomBase(room);
+  links = BROKERS.map(url => makeLink(url, base));
+  refresh();
+}
+
+function sendAll(sub, payload, opts) {
+  for (const l of links) if (l.online) l.client.publish(base + sub, payload, opts);
 }
 
 function announce() {
-  if (client && online) client.publish(base + "p/" + myId, JSON.stringify({ name: myName() }), { qos: 1, retain: true });
+  sendAll("p/" + myId, JSON.stringify({ name: myName() }), { qos: 1, retain: true });
 }
 
 function honk(to, btn) {
-  if (!client || !online || !peers.size) return;
+  if (!online || !peers.size) return;
   const key = to ?? "*", now = Date.now();
   if (now - (lastHonk.get(key) || 0) < COOLDOWN) return;
   lastHonk.set(key, now);
-  client.publish(base + "h", JSON.stringify({ id: myId, name: myName(), to: to ?? null }), { qos: 0 });
+  seq += 1;
+  sendAll("h", JSON.stringify({ id: myId, name: myName(), to: to ?? null, n: START + "-" + seq }), { qos: 0 });
   play(); // on s'entend klaxonner aussi
   if (btn) { btn.classList.remove("hit"); void btn.offsetWidth; btn.classList.add("hit"); }
 }
@@ -363,7 +392,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("pagehide", () => {
-  if (client?.connected) client.publish(base + "p/" + myId, "", { qos: 1, retain: true });
+  sendAll("p/" + myId, "", { qos: 1, retain: true });
 });
 
 if ("serviceWorker" in navigator && location.protocol === "https:") {
