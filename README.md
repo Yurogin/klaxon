@@ -14,8 +14,16 @@ un clic sur un nom le klaxonne, le bouton jaune klaxonne tout le salon.
 - **Navigateur** : https://klaxon.stlkm.fr, rien à installer. Un lien du type
   `https://klaxon.stlkm.fr/#nom-du-salon` pré-remplit le salon. Chrome propose aussi de
   l'installer comme une appli.
-- **Windows** : `windows/klaxon.py`, ou `windows/build.bat` pour fabriquer
-  `Klaxon.exe`. Mêmes salons que la version navigateur.
+- **Windows** : `Klaxon.exe`, installé par le hub STLKM ou pris dans les
+  releases. En plus de la version web :
+  - une **touche qui klaxonne depuis n'importe quel logiciel** (F9 par défaut,
+    tenue = klaxon long), même en plein jeu ;
+  - une **icône à côté de l'horloge** : fermer la fenêtre ne quitte pas,
+    Klaxon continue d'écouter et surgit quand on te klaxonne ;
+  - le **lancement avec Windows**, en fond ;
+  - un bouton vers la version web.
+
+  Pour refaire l'exe : `windows/build.bat`. Mêmes salons que la version web.
 
 Les messages passent par trois serveurs MQTT publics à la fois
 (`broker.emqx.io`, `broker.hivemq.com`, `test.mosquitto.org`) : si l'un rame
