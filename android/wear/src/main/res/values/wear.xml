@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="android_wear_capabilities" translatable="false">
+        <item>klaxon_watch</item>
+    </string-array>
+    <color name="bg">#15171C</color>
+</resources>

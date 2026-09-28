@@ -5,6 +5,9 @@ En plus de la version web : une touche qui klaxonne depuis n'importe quel logici
 à côté de l'horloge (Klaxon tourne en fond) et le lancement avec Windows.
 Passe par trois serveurs MQTT publics à la fois (si l'un rame, les autres suffisent),
 rien à héberger, aucun compte. Même protocole que la version navigateur (index.html).
+
+Amis : chaque installation a un code ami secret. Qui le connaît voit si tu es en ligne et dans
+quel salon (statut chiffré), et peut t'inviter. Groupes privés : salons au nom secret (« nom~secret »).
 """
 import ctypes
 import hashlib
@@ -12,6 +15,7 @@ import json
 import math
 import os
 import queue
+import re
 import socket
 import struct
 import sys
@@ -19,6 +23,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import tkinter.messagebox
 import urllib.parse
 import uuid
 import wave
@@ -27,6 +32,7 @@ from ctypes import wintypes
 
 import paho.mqtt.client as mqtt
 import pystray
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image, ImageDraw, ImageTk
 
 # chaque serveur : deux portes d'entrée, TLS direct puis WebSocket sécurisé (passe mieux les pare-feux)
@@ -41,6 +47,9 @@ START = int(time.time() * 1000)  # distingue les klaxons de deux lancements succ
 COOLDOWN = 0.35        # secondes entre deux klaxons
 MAX_HOLD = 4.0         # un klaxon long s'arrête tout seul au bout de ce temps
 RIPOSTE = 4.0          # secondes pendant lesquelles on peut riposter d'un clic
+HEARTBEAT = 60.0       # secondes entre deux statuts envoyés aux amis
+FRESH = 150.0          # un ami sans nouvelles depuis plus longtemps est hors ligne
+U = APP_PREFIX + "u/"  # u/<id ami>/s : statut chiffré (retenu), u/<id ami>/i : boîte aux lettres
 
 CONFIG = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Klaxon", "config.json")
 
@@ -51,6 +60,7 @@ FIELD = "#23262e"
 YELLOW = "#ffc629"
 BLUE = "#2f6fed"
 RED = "#e8412c"
+GREEN = "#3ccf6e"
 
 # nom -> (libellé, emoji, durée minimale d'un simple clic)
 SOUNDS = {
@@ -160,6 +170,64 @@ def room_base(room):
     return APP_PREFIX + hashlib.sha256(room.strip().lower().encode()).hexdigest()[:20] + "/"
 
 
+# --- amis : mêmes calculs que dans index.html ---------------------------------
+ALPHA = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"  # ni 0/O ni 1/I/L : se dicte sans erreur
+PRIVATE = re.compile(r"~[a-z0-9]{8,}$", re.I)
+TID = re.compile(r"[0-9a-f]{20}")
+
+
+def random_text(n, alpha):
+    return "".join(alpha[b % len(alpha)] for b in os.urandom(n))
+
+
+def norm_code(s):
+    return "".join(c for c in str(s or "").upper() if c.isascii() and c.isalnum())
+
+
+def valid_code(c):
+    return len(c) == 10 and all(ch in ALPHA for ch in c)
+
+
+def show_code(c):
+    return c[:5] + "-" + c[5:]
+
+
+_ids = {}
+
+
+def ident(code):
+    """Du code ami : un identifiant public (sa boîte sur les serveurs) et une clé AES."""
+    if code not in _ids:
+        tid = hashlib.sha256(("klaxon-ami/" + code).encode()).hexdigest()[:20]
+        _ids[code] = (tid, AESGCM(hashlib.sha256(("klaxon-cle/" + code).encode()).digest()))
+    return _ids[code]
+
+
+def seal(code, obj):
+    iv = os.urandom(12)  # 12 octets d'IV puis le chiffré AES-GCM (tag compris)
+    return iv + ident(code)[1].encrypt(iv, json.dumps(obj).encode(), None)
+
+
+def unseal(code, data):
+    try:
+        obj = json.loads(ident(code)[1].decrypt(bytes(data[:12]), bytes(data[12:]), None))
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def is_private(room):
+    return bool(PRIVATE.search(room))
+
+
+def room_label(room):
+    return "🔒 " + room.rsplit("~", 1)[0] if is_private(room) else room
+
+
+def same_room(a, b):
+    return a.strip().lower() == b.strip().lower()
+
+
 class Link:
     """Une connexion à un serveur. Présence : message retenu sur <salon>/p/<id>, que le serveur
     efface tout seul (testament MQTT) si le client disparaît. Klaxons : <salon>/h (début)
@@ -169,7 +237,8 @@ class Link:
         self.net, self.host, self.routes = net, host, routes
         self.client = None
         self.online = False
-        self.peers = {}  # id -> {"name", "sound"}, vus sur ce serveur
+        self.peers = {}  # id -> {"name", "sound", "u"}, vus sur ce serveur
+        self.subs = set()
         threading.Thread(target=self._connect_loop, daemon=True).start()
 
     def _make_client(self, transport, path):
@@ -203,8 +272,10 @@ class Link:
         if rc.is_failure:
             return
         self.online = True
-        client.subscribe(self.net.base + "#", qos=1)
+        self.subs = set(self.net.topics_wanted())
+        client.subscribe([(self.net.base + "#", 1)] + [(t, 1) for t in self.subs])
         self.announce()
+        self.net.publish_status(self)
         self.net.changed()
 
     def _on_disconnect(self, client, userdata, flags, rc, props=None):
@@ -214,6 +285,9 @@ class Link:
         self.net.changed()
 
     def _on_message(self, client, userdata, msg):
+        if msg.topic.startswith(U):
+            self.net.user_message(msg.topic[len(U):], msg.payload)
+            return
         base = self.net.base
         if not msg.topic.startswith(base):
             return  # reste d'un ancien salon
@@ -228,21 +302,40 @@ class Link:
                 else:
                     try:
                         p = json.loads(msg.payload)
-                        self.peers[pid] = {"name": str(p.get("name", "?"))[:24], "sound": sound_of(p.get("sound"))}
+                        u = p.get("u")
+                        self.peers[pid] = {"name": str(p.get("name", "?"))[:24], "sound": sound_of(p.get("sound")),
+                                           "u": u if isinstance(u, str) and TID.fullmatch(u) else ""}
                     except (ValueError, AttributeError):
                         return
             self.net.changed()
-        elif sub in ("h", "he"):
+        elif sub in ("h", "he", "f"):
             try:
                 data = json.loads(msg.payload)
                 if isinstance(data, dict):
-                    self.net.received(sub, data)
+                    if sub == "f":
+                        self.net.friend_request(data)
+                    else:
+                        self.net.received(sub, data)
             except ValueError:
                 pass
 
     def publish(self, sub, payload, qos=0, retain=False):
+        return self.publish_raw(self.net.base + sub, payload, qos, retain)
+
+    def publish_raw(self, topic, payload, qos=0, retain=False):
         if self.client and self.online:
-            return self.client.publish(self.net.base + sub, payload, qos=qos, retain=retain)
+            return self.client.publish(topic, payload, qos=qos, retain=retain)
+
+    def sync_subs(self, want):
+        c = self.client
+        if not (c and self.online):
+            return
+        add, drop = want - self.subs, self.subs - want
+        if add:
+            c.subscribe([(t, 1) for t in add])
+        if drop:
+            c.unsubscribe(list(drop))
+        self.subs = set(want)
 
     def announce(self):
         self.publish("p/" + self.net.my_id, self.net.presence(), qos=1, retain=True)
@@ -262,9 +355,11 @@ class Link:
                 pass
 
     def close(self):
-        info = self.publish("p/" + self.net.my_id, b"", qos=1, retain=True)
-        if info:
-            info.wait_for_publish(1.5)
+        infos = [self.publish("p/" + self.net.my_id, b"", qos=1, retain=True),
+                 self.publish_raw(U + self.net.tid + "/s", b"", qos=1, retain=True)]
+        for info in infos:
+            if info:
+                info.wait_for_publish(1.5)
         if self.client:
             self.client.disconnect()
 
@@ -272,19 +367,124 @@ class Link:
 class Net:
     """Parle aux trois serveurs à la fois : on envoie partout, on fusionne ce qu'on reçoit."""
 
-    def __init__(self, my_id, events, name, sound, room):
+    def __init__(self, my_id, events, name, sound, room, code, friends):
         self.my_id = my_id
         self.events = events
         self.name = name
         self.sound = sound
+        self.room = room.strip()
         self.base = room_base(room)
+        self.code = code
+        self.tid = ident(code)[0]
+        self.friends = {ident(f["code"])[0]: f["code"] for f in friends}  # id public -> code
+        self.fstatus = {}      # id public -> {"name", "room", "t"}, le plus récent des trois serveurs
+        self.pending = set()   # ids des gens du salon à qui on a demandé d'être amis
         self.lock = threading.Lock()
         self.seq = 0
         self.seen_msgs = {}  # (id, n) -> heure : un klaxon arrive une fois par serveur
         self.links = [Link(self, host, routes) for host, routes in BROKERS]
 
     def presence(self):
-        return json.dumps({"name": self.name, "sound": self.sound})
+        return json.dumps({"name": self.name, "sound": self.sound, "u": self.tid})
+
+    # --- amis ------------------------------------------------------------
+    def topics_wanted(self):
+        with self.lock:
+            return {U + self.tid + "/i"} | {U + t + "/s" for t in self.friends}
+
+    def set_friends(self, friends):
+        with self.lock:
+            self.friends = {ident(f["code"])[0]: f["code"] for f in friends}
+            self.fstatus = {t: s for t, s in self.fstatus.items() if t in self.friends}
+            self.pending -= set(self.friends)
+        want = self.topics_wanted()
+        for l in self.links:
+            l.sync_subs(want)
+
+    def friend_status(self, code):
+        """Le statut d'un ami s'il est en ligne, sinon None."""
+        with self.lock:
+            s = self.fstatus.get(ident(code)[0])
+        return s if s and time.time() * 1000 - s["t"] < FRESH * 1000 else None
+
+    def publish_status(self, only=None):
+        payload = seal(self.code, {"name": self.name, "room": self.room, "t": int(time.time() * 1000)})
+        for l in [only] if only else self.links:
+            l.publish_raw(U + self.tid + "/s", payload, qos=1, retain=True)
+
+    def next_n(self):
+        self.seq += 1
+        return "%d-%d" % (START, self.seq)
+
+    def send_inbox(self, code, msg):
+        payload = seal(code, dict(msg, **{"from": self.code, "name": self.name, "n": self.next_n()}))
+        for l in self.links:
+            l.publish_raw(U + ident(code)[0] + "/i", payload, qos=1)
+
+    def ask_friend(self, pid, u):
+        self.pending.add(u)
+        payload = json.dumps({"id": self.my_id, "to": pid, "name": self.name, "code": self.code, "n": self.next_n()})
+        for l in self.links:
+            l.publish("f", payload, qos=1)
+
+    def fresh(self, key):
+        """Un message arrive une fois par serveur : on n'en traite qu'un."""
+        now = time.time()
+        with self.lock:
+            if key in self.seen_msgs:
+                return False
+            self.seen_msgs[key] = now
+            if len(self.seen_msgs) > 500:
+                self.seen_msgs = {k: v for k, v in self.seen_msgs.items() if now - v < 60}
+        return True
+
+    def user_message(self, rest, payload):
+        parts = rest.split("/")
+        if len(parts) != 2:
+            return
+        tid, kind = parts
+        if kind == "s":
+            with self.lock:
+                code = self.friends.get(tid)
+            if not code:
+                return
+            if not payload:
+                with self.lock:
+                    self.fstatus.pop(tid, None)
+                self.events.put(("friends",))
+                return
+            s = unseal(code, payload)
+            t = s and s.get("t")
+            if not isinstance(t, (int, float)) or isinstance(t, bool):
+                return
+            name = str(s.get("name", "?"))[:24]
+            room = s.get("room") if isinstance(s.get("room"), str) else ""
+            with self.lock:
+                old = self.fstatus.get(tid)
+                if old and old["t"] > t:
+                    return
+                self.fstatus[tid] = {"name": name, "room": room[:80], "t": t}
+            self.events.put(("fname", code, name))
+        elif kind == "i" and tid == self.tid:
+            m = unseal(self.code, payload)
+            if not m:
+                return
+            frm, name = norm_code(m.get("from")), str(m.get("name", "?"))[:24]
+            if not valid_code(frm) or frm == self.code or not self.fresh("i/%s/%s" % (frm, m.get("n"))):
+                return
+            room = m.get("room")
+            if m.get("type") == "invite" and isinstance(room, str) and room.strip():
+                self.events.put(("invite", frm, name, room.strip()[:80]))
+            elif m.get("type") == "ami":
+                self.events.put(("ami", frm, name, ident(frm)[0] in self.pending))
+
+    def friend_request(self, data):
+        """Demande faite depuis le salon, avec le code de celui qui demande."""
+        if data.get("to") != self.my_id or not self.fresh("f/%s/%s" % (data.get("id"), data.get("n"))):
+            return
+        frm = norm_code(data.get("code"))
+        if valid_code(frm) and frm != self.code:
+            self.events.put(("freq", frm, str(data.get("name", "?"))[:24]))
 
     def changed(self):
         self.events.put(("conn", self.online_count()))
@@ -335,9 +535,11 @@ class Net:
         self.name, self.sound = name, sound
         for l in self.links:
             l.announce()
+        self.publish_status()
 
     def set_room(self, room):
         new = room_base(room)
+        self.room = room.strip()
         if new == self.base:
             return
         old, self.base = self.base, new
@@ -519,6 +721,20 @@ class App:
         self.room = tk.StringVar(value=self.cfg.get("room") or "")
         self.sound = sound_of(self.cfg.get("sound"))
 
+        self.code = norm_code(self.cfg.get("code"))
+        if not valid_code(self.code):
+            self.code = self.cfg["code"] = random_text(10, ALPHA)
+            save_config(self.cfg)
+        self.friends = []  # {"code", "name"}
+        for f in self.cfg.get("friends") or []:
+            c = norm_code(f.get("code") if isinstance(f, dict) else None)
+            if valid_code(c) and c != self.code and all(x["code"] != c for x in self.friends):
+                self.friends.append({"code": c, "name": str(f.get("name", "?"))[:24]})
+        self.groups = [g for g in self.cfg.get("groups") or [] if isinstance(g, str) and is_private(g)]
+        self.notices = []      # (clé, texte, bouton, action) : invitations et demandes à traiter
+        self.invited_at = {}   # code -> heure de la dernière invitation envoyée
+        self.fwin = None       # fenêtre des amis
+
         self.fields = tk.Frame(self.root, bg=BG)
         self.fields.pack(fill="x", padx=20, pady=(18, 6))
         self.fields.columnconfigure(1, weight=1)
@@ -529,14 +745,18 @@ class App:
                 row=row, column=0, sticky="w", pady=4)
             e = tk.Entry(self.fields, textvariable=var, font=("Segoe UI", 16, "bold"), bg=FIELD,
                          fg=FG, insertbackground=FG, relief="flat")
-            e.grid(row=row, column=1, columnspan=2 - row, sticky="ew", padx=(12, 0), pady=4, ipady=4)
+            e.grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=4, ipady=4)
             e.bind("<Return>", lambda ev, a=apply: (a(), self.root.focus()))
             e.bind("<FocusOut>", lambda ev, a=apply: a())
             self.entries.append(e)
         self.invite_btn = tk.Button(self.fields, text="🔗 Inviter", command=self.invite, font=("Segoe UI", 12, "bold"),
                                     bg=FIELD, fg=FG, activebackground="#2f333d", activeforeground=FG,
                                     relief="flat", cursor="hand2", padx=10)
-        self.invite_btn.grid(row=1, column=2, sticky="ns", padx=(8, 0), pady=4)
+        self.invite_btn.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=4)
+        self.friends_btn = tk.Button(self.fields, text="👥 Amis", command=self.open_friends,
+                                     font=("Segoe UI", 12, "bold"), bg=FIELD, fg=FG, activebackground="#2f333d",
+                                     activeforeground=FG, relief="flat", cursor="hand2", padx=10)
+        self.friends_btn.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=4)
 
         self.sound_row = tk.Frame(self.root, bg=BG)
         self.sound_row.pack(fill="x", padx=20, pady=(4, 0))
@@ -557,6 +777,19 @@ class App:
         self.autostart_btn = self.option_button(1, self.toggle_autostart)
         self.option_button(2, self.open_web).configure(text="🌐 Version web")
         self.paint_options()
+
+        # invitation ou demande d'ami reçue
+        self.notice_row = tk.Frame(self.root, bg=FIELD, highlightthickness=2, highlightbackground=YELLOW)
+        self.notice_text = tk.Label(self.notice_row, bg=FIELD, fg=FG, font=("Segoe UI", 12, "bold"),
+                                    anchor="w", justify="left", wraplength=320)
+        self.notice_text.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=6)
+        tk.Button(self.notice_row, text="Non", command=lambda: self.answer_notice(False), font=("Segoe UI", 11, "bold"),
+                  bg="#2f333d", fg=FG, activebackground="#3a3f4b", activeforeground=FG, relief="flat",
+                  cursor="hand2", padx=8).pack(side="right", padx=(0, 6), pady=6)
+        self.notice_yes = tk.Button(self.notice_row, command=lambda: self.answer_notice(True),
+                                    font=("Segoe UI", 11, "bold"), bg=YELLOW, fg="#1a1a1a",
+                                    activebackground="#ffdb70", relief="flat", cursor="hand2", padx=8)
+        self.notice_yes.pack(side="right", padx=(0, 6), pady=6)
 
         self.status = tk.Label(self.root, text="", bg=BG, fg=MUTED, font=("Segoe UI", 20, "bold"))
         self.status.pack(fill="x", pady=(8, 4))
@@ -601,12 +834,14 @@ class App:
         self.shown = None
         self.peer_btns = {}
         if self.room.get().strip():
+            self.add_group(self.room.get().strip())
             self.start_net()
         else:
             self.entries[1].focus()
         self.render_peers()
         self.poll()
         self.tick_blink()
+        self.root.after(int(HEARTBEAT * 1000), self.heartbeat)
 
     # --- fond : icône, instance unique, raccourci, démarrage -----------------
     def listen_single(self):
@@ -721,7 +956,7 @@ class App:
         webbrowser.open(SITE + ("#" + urllib.parse.quote(room) if room else ""))
 
     def start_net(self):
-        self.net = Net(self.my_id, self.events, self.my_name(), self.sound, self.room.get())
+        self.net = Net(self.my_id, self.events, self.my_name(), self.sound, self.room.get(), self.code, self.friends)
 
     # --- champs ----------------------------------------------------------
     def my_name(self):
@@ -741,12 +976,17 @@ class App:
             return
         self.cfg["room"] = room
         save_config(self.cfg)
+        self.add_group(room)
         self.riposte = None
         if self.net:
             self.net.set_room(room)
         else:
             self.start_net()
         self.render_peers()
+
+    def go_room(self, room):
+        self.room.set(room)
+        self.apply_room()
 
     def pick_sound(self, k):
         self.sound = k
@@ -799,6 +1039,16 @@ class App:
                     self.hotkey_down()
                 elif ev[0] == "hk_status":
                     self.hotkey_status(ev[1], ev[2])
+                elif ev[0] == "friends":
+                    self.render_friends()
+                elif ev[0] == "fname":
+                    self.friend_named(ev[1], ev[2])
+                elif ev[0] == "invite":
+                    self.invited(*ev[1:])
+                elif ev[0] == "ami":
+                    self.friend_added_me(*ev[1:])
+                elif ev[0] == "freq":
+                    self.friend_asked(*ev[1:])
         except queue.Empty:
             pass
         if self.flash_until and time.time() > self.flash_until:
@@ -856,6 +1106,298 @@ class App:
         except tk.TclError:
             pass
 
+    # --- amis et groupes ---------------------------------------------------
+    def save_friends(self):
+        self.cfg["friends"] = self.friends
+        save_config(self.cfg)
+        if self.net:
+            self.net.set_friends(self.friends)
+        self.render_friends()
+
+    def is_friend(self, code):
+        return any(f["code"] == code for f in self.friends)
+
+    def add_friend(self, code, name):
+        if code == self.code or self.is_friend(code):
+            return
+        self.friends.append({"code": code, "name": (name or "?")[:24]})
+        self.save_friends()
+        if self.net:  # il voit une demande, ou nous ajoute tout seul s'il l'avait demandé
+            self.net.send_inbox(code, {"type": "ami"})
+
+    def remove_friend(self, code):
+        self.friends = [f for f in self.friends if f["code"] != code]
+        self.save_friends()
+
+    def friend_named(self, code, name):
+        for f in self.friends:
+            if f["code"] == code and f["name"] != name:
+                f["name"] = name
+                self.cfg["friends"] = self.friends
+                save_config(self.cfg)
+        self.render_friends()
+
+    def add_group(self, room):
+        if is_private(room) and not any(same_room(g, room) for g in self.groups):
+            self.groups.append(room)
+            self.cfg["groups"] = self.groups
+            save_config(self.cfg)
+
+    def forget_group(self, room):
+        if tkinter.messagebox.askyesno("Klaxon", "Oublier le groupe « %s » ? Il faudra une invitation pour y revenir."
+                                       % room_label(room)[2:], parent=self.fwin):
+            self.groups = [g for g in self.groups if g != room]
+            self.cfg["groups"] = self.groups
+            save_config(self.cfg)
+            self.render_friends()
+
+    def create_group(self):
+        name = self.group_entry.get().strip().replace("~", "-")[:40]
+        if name:
+            self.group_entry.delete(0, "end")
+            self.go_room(name + "~" + random_text(10, ALPHA.lower()))  # l'ajoute aux groupes
+
+    def invite_friend(self, code):
+        if not self.net:
+            return
+        self.net.send_inbox(code, {"type": "invite", "room": self.room.get().strip()})
+        self.invited_at[code] = time.time()
+        self.root.after(3050, self.render_friends)
+        self.render_friends()
+
+    def ask_friend(self, pid, u):
+        if self.net:
+            self.net.ask_friend(pid, u)
+            self.render_friends()
+
+    def heartbeat(self):
+        if self.net:
+            self.net.publish_status()
+        self.render_friends()
+        self.root.after(int(HEARTBEAT * 1000), self.heartbeat)
+
+    # --- invitations et demandes reçues -------------------------------------
+    def notice(self, key, text, yes, action, loud=False):
+        self.notices = [n for n in self.notices if n[0] != key][-4:] + [(key, text, yes, action)]
+        self.render_notice()
+        if loud:
+            k = "invit/%f" % time.time()
+            self.player.start(k, "canard")
+            self.player.end(k)
+        if self.root.state() == "withdrawn":
+            try:
+                self.tray.notify(text[2:], "Klaxon")
+            except Exception:
+                pass
+
+    def render_notice(self):
+        if not self.notices:
+            self.notice_row.pack_forget()
+            return
+        _, text, yes, _ = self.notices[0]
+        self.notice_text.configure(text=text)
+        self.notice_yes.configure(text=yes)
+        self.notice_row.pack(fill="x", padx=20, pady=(8, 0), before=self.status)
+
+    def answer_notice(self, yes):
+        if self.notices:
+            action = self.notices.pop(0)[3]
+            self.render_notice()
+            if yes:
+                action()
+
+    def invited(self, frm, name, room):
+        if not same_room(room, self.room.get()):
+            self.notice("inv/" + frm, "📨 %s t'invite dans « %s »" % (name, room_label(room)), "Rejoindre",
+                        lambda: self.go_room(room), loud=True)
+
+    def friend_added_me(self, frm, name, asked):
+        if self.is_friend(frm):
+            return
+        if asked:
+            self.add_friend(frm, name)
+        else:
+            self.notice("ami/" + frm, "👋 %s t'a ajouté en ami" % name, "Ajouter", lambda: self.add_friend(frm, name))
+
+    def friend_asked(self, frm, name):
+        if not self.is_friend(frm):
+            self.notice("ami/" + frm, "👋 %s veut être ton ami" % name, "Accepter", lambda: self.add_friend(frm, name))
+
+    # --- fenêtre des amis ---------------------------------------------------
+    def open_friends(self):
+        if self.fwin:
+            self.fwin.deiconify()
+            self.fwin.lift()
+            self.fwin.focus_force()
+            return
+        w = self.fwin = tk.Toplevel(self.root, bg=BG)
+        w.title("Klaxon — Amis")
+        w.geometry("480x640")
+        w.minsize(420, 360)
+        w.protocol("WM_DELETE_WINDOW", self.close_friends)
+
+        canvas = tk.Canvas(w, bg=BG, highlightthickness=0)
+        bar = tk.Scrollbar(w, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win_id, width=e.width))
+        w.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-e.delta // 120, "units"))
+
+        def title(text):
+            tk.Label(body, text=text, bg=BG, fg=MUTED, font=("Segoe UI", 10, "bold"), anchor="w").pack(
+                fill="x", padx=16, pady=(16, 4))
+
+        def hint(text):
+            lab = tk.Label(body, text=text, bg=BG, fg=MUTED, font=("Segoe UI", 10), anchor="w", justify="left",
+                           wraplength=420)
+            lab.pack(fill="x", padx=16, pady=(4, 0))
+            return lab
+
+        def entry_row(label, command):
+            row = tk.Frame(body, bg=BG)
+            row.pack(fill="x", padx=16)
+            e = tk.Entry(row, font=("Segoe UI", 13, "bold"), bg=FIELD, fg=FG, insertbackground=FG, relief="flat")
+            e.pack(side="left", fill="x", expand=True, ipady=4)
+            e.bind("<Return>", lambda ev: command())
+            self.small_button(row, label, command, yes=True).pack(side="right", padx=(8, 0))
+            return e
+
+        title("MON CODE AMI")
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", padx=16)
+        tk.Label(row, text=show_code(self.code), bg=BG, fg=YELLOW, font=("Consolas", 20, "bold")).pack(side="left")
+        self.copy_code_btn = self.small_button(row, "Copier", self.copy_code)
+        self.copy_code_btn.pack(side="right")
+        hint("Donne-le à tes amis : avec, ils te voient en ligne et peuvent t'inviter.")
+
+        title("MES AMIS")
+        self.code_entry = entry_row("Ajouter", self.add_friend_code)
+        self.add_msg = hint("")
+        self.friend_box = tk.Frame(body, bg=BG)
+        self.friend_box.pack(fill="x", padx=16, pady=(4, 0))
+
+        self.here_title = tk.Label(body, text="DANS CE SALON", bg=BG, fg=MUTED, font=("Segoe UI", 10, "bold"), anchor="w")
+        self.here_box = tk.Frame(body, bg=BG)
+        self.groups_title = tk.Label(body, text="GROUPES PRIVÉS", bg=BG, fg=MUTED, font=("Segoe UI", 10, "bold"),
+                                     anchor="w")
+        self.groups_title.pack(fill="x", padx=16, pady=(16, 4))
+        self.group_box = tk.Frame(body, bg=BG)
+        self.group_box.pack(fill="x", padx=16, pady=(0, 6))
+        self.group_entry = entry_row("Créer", self.create_group)
+        hint("Un groupe privé a un nom secret : on n'y entre que par invitation ou par son lien.")
+        tk.Frame(body, bg=BG, height=16).pack()
+        self.render_friends()
+        self.code_entry.focus()
+
+    def close_friends(self):
+        self.fwin.destroy()
+        self.fwin = None
+
+    def small_button(self, parent, text, command, yes=False, state="normal"):
+        return tk.Button(parent, text=text, command=command, font=("Segoe UI", 11, "bold"), relief="flat",
+                         cursor="hand2", padx=8, state=state, bg=YELLOW if yes else "#2f333d",
+                         fg="#1a1a1a" if yes else FG, activebackground="#ffdb70" if yes else "#3a3f4b",
+                         activeforeground="#1a1a1a" if yes else FG, disabledforeground=MUTED)
+
+    def copy_code(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(show_code(self.code))
+        self.copy_code_btn.configure(text="✓ Copié")
+        self.root.after(1600, lambda: self.fwin and self.copy_code_btn.configure(text="Copier"))
+
+    def add_friend_code(self):
+        code = norm_code(self.code_entry.get())
+        if not valid_code(code):
+            msg = "Un code ami fait 10 caractères, comme %s." % show_code(self.code)
+        elif code == self.code:
+            msg = "C'est ton propre code 🙂"
+        elif self.is_friend(code):
+            msg = "Déjà dans tes amis."
+        else:
+            self.add_friend(code, "?")
+            self.code_entry.delete(0, "end")
+            msg = "Ajouté ! Son nom apparaît dès qu'il est en ligne."
+        self.add_msg.configure(text=msg)
+
+    def list_row(self, box, name, sub, dot=None):
+        row = tk.Frame(box, bg=FIELD)
+        row.pack(fill="x", pady=3)
+        if dot is not None:
+            tk.Label(row, text="●", bg=FIELD, fg=GREEN if dot else "#4a4f5c", font=("Segoe UI", 12)).pack(
+                side="left", padx=(10, 0))
+        who = tk.Frame(row, bg=FIELD)
+        who.pack(side="left", fill="x", expand=True, padx=10, pady=5)
+        tk.Label(who, text=name, bg=FIELD, fg=FG, font=("Segoe UI", 12, "bold"), anchor="w").pack(fill="x")
+        if sub:
+            tk.Label(who, text=sub, bg=FIELD, fg=MUTED, font=("Segoe UI", 10), anchor="w").pack(fill="x")
+        return row
+
+    def x_button(self, row, command):
+        tk.Button(row, text="✕", command=command, font=("Segoe UI", 12), bg=FIELD, fg=MUTED, activebackground=FIELD,
+                  activeforeground=FG, relief="flat", cursor="hand2", bd=0).pack(side="right", padx=(0, 6))
+
+    def render_friends(self):
+        online = [f for f in self.friends if self.net and self.net.friend_status(f["code"])]
+        self.friends_btn.configure(text="👥 Amis" + (" · %d" % len(online) if online else ""))
+        if not self.fwin:
+            return
+        room = self.room.get().strip()
+        for box in (self.friend_box, self.here_box, self.group_box):
+            for c in box.winfo_children():
+                c.destroy()
+
+        rows = sorted(((f, self.net.friend_status(f["code"]) if self.net else None) for f in self.friends),
+                      key=lambda x: (x[1] is None, x[0]["name"].lower()))
+        for f, s in rows:
+            here = bool(s and s["room"] and same_room(s["room"], room))
+            where = ("hors ligne" if not s else "avec toi" if here else
+                     "dans « %s »" % room_label(s["room"]) if s["room"] else "en ligne")
+            row = self.list_row(self.friend_box, f["name"], where, dot=bool(s))
+            code = f["code"]
+            self.x_button(row, lambda c=code, n=f["name"]: tkinter.messagebox.askyesno(
+                "Klaxon", "Retirer %s de tes amis ?" % n, parent=self.fwin) and self.remove_friend(c))
+            if s and not here:
+                recent = time.time() - self.invited_at.get(code, 0) < 3
+                self.small_button(row, "✓ Invité" if recent else "Inviter", lambda c=code: self.invite_friend(c),
+                                  state="disabled" if recent or not room else "normal").pack(side="right", padx=(0, 6))
+            if s and s["room"] and not here:
+                self.small_button(row, "Rejoindre", lambda r=s["room"]: self.go_room(r), yes=True).pack(
+                    side="right", padx=(0, 6))
+        if not self.friends:
+            self.list_row(self.friend_box, "Pas encore d'amis", "Ajoute un code, ou quelqu'un de ton salon.")
+
+        tids = {ident(f["code"])[0] for f in self.friends}
+        strangers = [(pid, p) for pid, p in (self.net.snapshot() if self.net else [])
+                     if p.get("u") and p["u"] != ident(self.code)[0] and p["u"] not in tids]
+        if strangers:
+            self.here_title.pack(fill="x", padx=16, pady=(16, 4), before=self.groups_title)
+            self.here_box.pack(fill="x", padx=16, before=self.groups_title)
+            for pid, p in strangers:
+                row = self.list_row(self.here_box, p["name"], "")
+                if p["u"] in self.net.pending:
+                    self.small_button(row, "Demande envoyée", None, state="disabled").pack(side="right", padx=6)
+                else:
+                    self.small_button(row, "+ Ajouter", lambda i=pid, u=p["u"]: self.ask_friend(i, u), yes=True).pack(
+                        side="right", padx=6)
+        else:
+            self.here_title.pack_forget()
+            self.here_box.pack_forget()
+
+        for g in self.groups:
+            here = same_room(g, room)
+            row = self.list_row(self.group_box, room_label(g), "tu y es" if here else "")
+            self.x_button(row, lambda r=g: self.forget_group(r))
+            if here:
+                self.small_button(row, "🔗 Copier le lien", self.invite).pack(side="right", padx=(0, 6))
+            else:
+                self.small_button(row, "Entrer", lambda r=g: self.go_room(r), yes=True).pack(side="right", padx=(0, 6))
+        if not self.groups:
+            self.list_row(self.group_box, "Aucun groupe privé pour l'instant", "")
+
     # --- rendu -----------------------------------------------------------
     def set_bg(self, color):
         for w in (self.root, self.grid, self.status, self.fields, self.sound_row, self.opt_row):
@@ -900,6 +1442,7 @@ class App:
             self.shown = order
             if self.holding and self.holding[1] in self.peer_btns.values():
                 self.release()
+            self.render_friends()  # « Dans ce salon »
             for w in self.grid.winfo_children():
                 w.destroy()
             self.peer_btns = {}

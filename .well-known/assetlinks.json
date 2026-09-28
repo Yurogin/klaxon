@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "fr.stlkm.klaxon",
+      "sha256_cert_fingerprints": [
+        "5F:86:94:C2:D3:79:B0:C8:52:3C:0D:AD:5B:27:8A:91:D0:0A:9D:23:81:86:61:2D:86:18:44:A5:4D:2A:38:DC"
+      ]
+    }
+  }
+]

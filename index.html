@@ -48,7 +48,8 @@
   }
 
   /* --- porte d'entrée : le clic sur ENTRER débloque aussi le son --- */
-  #gate { justify-content: center; }
+  /* centré, mais on peut faire défiler si l'écran est vraiment petit */
+  #gate { justify-content: center; justify-content: safe center; overflow-y: auto; }
   #gate h1 {
     margin: 0 0 clamp(8px, 3vh, 32px);
     font-size: clamp(48px, 12vh, 120px);
@@ -60,7 +61,6 @@
   }
   .fields { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
   #room-form { grid-template-columns: auto 1fr auto; }
-  #room-form #name { grid-column: 2 / -1; }
   .fields label { color: var(--muted); font-size: clamp(14px, 2.2vh, 20px); }
   .fields input {
     min-width: 0;
@@ -82,7 +82,38 @@
     border-radius: 10px;
   }
   #enter:hover { background: var(--yellow-hi); }
-  #invite {
+  #open-app {
+    grid-column: 1 / -1;
+    text-align: center;
+    background: var(--field);
+    color: var(--fg);
+    text-decoration: none;
+    font-weight: 700;
+    border-radius: 10px;
+    padding: .6em;
+  }
+  /* --- les applis à télécharger, en bas de la porte d'entrée --- */
+  #get {
+    margin-top: clamp(14px, 5vh, 44px);
+    text-align: center;
+    color: var(--muted);
+    font-size: clamp(12px, 1.9vh, 16px);
+  }
+  #get p { margin: 0 0 .7em; }
+  #get a {
+    display: inline-block;
+    margin: 3px;
+    padding: .5em .9em;
+    background: var(--field);
+    border-radius: 8px;
+    color: var(--fg);
+    text-decoration: none;
+    font-weight: 700;
+    font-size: clamp(13px, 2.1vh, 18px);
+  }
+  #get a:hover { background: #2f333d; }
+
+  .side {
     align-self: stretch;
     background: var(--field);
     border-radius: 6px;
@@ -91,8 +122,8 @@
     font-size: clamp(14px, 2.2vh, 20px);
     white-space: nowrap;
   }
-  #invite:hover { background: #2f333d; }
-  #invite.ok { background: var(--yellow); color: #1a1a1a; }
+  .side:hover { background: #2f333d; }
+  .side.ok { background: var(--yellow); color: #1a1a1a; }
 
   /* --- choix du son --- */
   #sounds { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
@@ -168,6 +199,61 @@
   /* la personne qui vient de te klaxonner : un clic dessus et tu ripostes */
   #peers button.riposte { border-color: var(--yellow); animation: riposte .5s ease-in-out infinite alternate; }
   @keyframes riposte { to { border-color: transparent; } }
+
+  /* --- invitation ou demande d'ami reçue --- */
+  #notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--field);
+    border: 2px solid var(--yellow);
+    border-radius: 8px;
+    padding: 6px 6px 6px 12px;
+    font-weight: 700;
+    font-size: clamp(14px, 2.2vh, 18px);
+  }
+  #notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .btn { background: #2f333d; border-radius: 6px; padding: .35em .7em; font-weight: 700; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: #3a3f4b; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.yes { background: var(--yellow); color: #1a1a1a; }
+  .btn.yes:hover:not(:disabled) { background: var(--yellow-hi); }
+
+  /* --- amis et groupes --- */
+  #friends {
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    background: var(--bg);
+    color: var(--fg);
+    border: 2px solid var(--field);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  #friends::backdrop { background: rgba(0, 0, 0, .6); }
+  #friends h2 { margin: 0; font-size: 26px; font-weight: 900; color: var(--yellow); flex: 1; }
+  #friends h3 { margin: 18px 0 8px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--field);
+    border: 0;
+    border-radius: 6px;
+    padding: .35em .5em;
+    font-weight: 700;
+  }
+  #my-code { font-size: 22px; letter-spacing: .08em; color: var(--yellow); flex: 1; }
+  .hint { color: var(--muted); font-size: 14px; margin: 6px 0 0; min-height: 1.2em; }
+  #friends ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  #friends li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; background: var(--field); border-radius: 8px; padding: 6px 6px 6px 10px; }
+  #friends li .who { flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; overflow-wrap: break-word; }
+  #friends li small { color: var(--muted); }
+  #friends li .empty { color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #4a4f5c; flex: none; }
+  .dot.on { background: #3ccf6e; }
+  .x { background: none; color: var(--muted); padding: .2em .5em; font-size: 18px; }
+  .x:hover { color: var(--fg); }
+
   @media (prefers-reduced-motion: reduce) {
     body { transition: none; }
     #peers button.riposte { animation: none; }
@@ -184,22 +270,70 @@
     <label for="gate-room">Salon</label>
     <input id="gate-room" maxlength="60" required>
     <button id="enter" type="submit" style="grid-column: 1 / -1">ENTRER</button>
+    <a id="open-app" hidden>📱 Ouvrir dans l'appli Klaxon</a>
   </form>
+  <footer id="get">
+    <p>Ou installe l'appli, pour être klaxonné sans garder la page ouverte :</p>
+    <a href="dl/Klaxon-telephone.apk" download>📱 Android</a>
+    <a href="dl/Klaxon-montre.apk" download title="À installer depuis le téléphone : elle a besoin de l'appli Android">⌚ Montre</a>
+    <a href="dl/Klaxon.exe" download>🖥️ Windows</a>
+  </footer>
 </main>
 
 <main id="room" class="screen" hidden>
   <form id="room-form" class="fields" autocomplete="off">
     <label for="name">Moi</label>
     <input id="name" maxlength="24">
+    <button id="friends-btn" class="side" type="button">👥 Amis</button>
     <label for="room-input">Salon</label>
-    <input id="room-input" maxlength="60">
-    <button id="invite" type="button">🔗 Inviter</button>
+    <input id="room-input" maxlength="80">
+    <button id="invite" class="side" type="button">🔗 Inviter</button>
   </form>
   <div id="sounds" role="group" aria-label="Mon klaxon"></div>
+  <div id="notice" role="alert" hidden>
+    <span id="notice-text"></span>
+    <button id="notice-yes" class="btn yes" type="button"></button>
+    <button id="notice-no" class="btn" type="button">Non</button>
+  </div>
   <button id="status" type="button" aria-live="polite"></button>
   <button id="all" type="button" disabled>📯 TOUT LE MONDE</button>
   <div id="peers"></div>
 </main>
+
+<dialog id="friends" aria-labelledby="friends-title">
+  <div class="row">
+    <h2 id="friends-title">Amis</h2>
+    <button id="friends-close" class="x" type="button" aria-label="Fermer">✕</button>
+  </div>
+
+  <h3>Mon code ami</h3>
+  <div class="row">
+    <b id="my-code"></b>
+    <button id="copy-code" class="btn" type="button">Copier</button>
+  </div>
+  <p class="hint">Donne-le à tes amis : avec, ils te voient en ligne et peuvent t'inviter.</p>
+
+  <h3>Mes amis</h3>
+  <form id="add-friend" class="row" autocomplete="off">
+    <input id="friend-code" maxlength="16" placeholder="Code d'un ami" aria-label="Code d'un ami">
+    <button class="btn yes" type="submit">Ajouter</button>
+  </form>
+  <p id="add-msg" class="hint"></p>
+  <ul id="friend-list"></ul>
+
+  <div id="here-sec">
+    <h3>Dans ce salon</h3>
+    <ul id="here-list"></ul>
+  </div>
+
+  <h3>Groupes privés</h3>
+  <ul id="group-list"></ul>
+  <form id="new-group" class="row" autocomplete="off" style="margin-top: 6px">
+    <input id="group-name" maxlength="40" placeholder="Nom du nouveau groupe" aria-label="Nom du nouveau groupe">
+    <button class="btn yes" type="submit">Créer</button>
+  </form>
+  <p class="hint">Un groupe privé a un nom secret : on n'y entre que par invitation ou par son lien.</p>
+</dialog>
 
 <script src="mqtt.min.js"></script>
 <script>
@@ -216,6 +350,9 @@ const SITE = "https://klaxon.stlkm.fr/";
 const COOLDOWN = 350;       // ms entre deux klaxons
 const MAX_HOLD = 4;         // s : un klaxon long s'arrête tout seul au bout de ce temps
 const RIPOSTE = 4000;       // ms pendant lesquels on peut riposter d'un clic
+const HEARTBEAT = 60000;    // ms entre deux statuts envoyés aux amis
+const FRESH = 150000;       // ms : un ami sans nouvelles depuis plus longtemps est hors ligne
+const U = APP_PREFIX + "u/"; // u/<id ami>/s : statut chiffré (retenu), u/<id ami>/i : boîte aux lettres
 
 const $ = (id) => document.getElementById(id);
 const myId = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -231,6 +368,7 @@ let flashTimer = 0, lastPress = 0;
 let seq = 0, seen = new Map();  // un klaxon arrive une fois par serveur : on n'en joue qu'un
 const START = Date.now();
 let riposte = null;             // { id, name, until }
+let curRoom = "";
 
 // ---------- sons ----------
 // Chaque son est une boucle d'exactement 1 s (fréquences entières) : un klaxon long boucle sans clic.
@@ -319,6 +457,192 @@ function endVoice(key) {
   v.src.stop(t + 0.05);
 }
 
+// ---------- amis ----------
+// Chaque appareil a un code ami secret. Du code on tire deux choses : un identifiant public (le
+// nom de sa boîte sur les serveurs) et une clé AES : seul qui connaît le code lit son statut
+// (en ligne, dans quel salon) et peut lui écrire. Mêmes calculs que dans windows/klaxon.py.
+const ALPHA = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";   // ni 0/O ni 1/I/L : se dicte sans erreur
+const randomText = (n, alpha) => [...crypto.getRandomValues(new Uint8Array(n))].map(b => alpha[b % alpha.length]).join("");
+const normCode = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const validCode = (c) => c.length === 10 && [...c].every(ch => ALPHA.includes(ch));
+const showCode = (c) => c.slice(0, 5) + "-" + c.slice(5);
+const hex = (b) => [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+const sha = async (s) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
+const idCache = new Map();
+function idOf(code) {   // -> Promise<{ tid, key }>
+  if (!idCache.has(code)) idCache.set(code, (async () => ({
+    tid: hex(await sha("klaxon-ami/" + code)).slice(0, 20),
+    key: await crypto.subtle.importKey("raw", await sha("klaxon-cle/" + code), "AES-GCM", false, ["encrypt", "decrypt"]),
+  }))());
+  return idCache.get(code);
+}
+async function seal(code, obj) {   // 12 octets d'IV puis le chiffré AES-GCM (tag compris)
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, (await idOf(code)).key,
+    new TextEncoder().encode(JSON.stringify(obj))));
+  const out = new Uint8Array(12 + ct.length);
+  out.set(iv);
+  out.set(ct, 12);
+  return out;
+}
+async function unseal(code, bytes) {
+  try {
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, (await idOf(code)).key, bytes.slice(12));
+    const obj = JSON.parse(new TextDecoder().decode(plain));
+    return obj && typeof obj === "object" ? obj : null;
+  } catch { return null; }
+}
+
+// Un groupe privé est un salon dont le nom finit par ~ et un secret : impossible à deviner.
+const isPrivate = (room) => /~[a-z0-9]{8,}$/i.test(room);
+const roomLabel = (room) => isPrivate(room) ? "🔒 " + room.replace(/~[^~]*$/, "") : room;
+const sameRoom = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+const me = { code: "", tid: "" };
+let friends = [];             // { code, name, tid }
+const fstatus = new Map();    // tid -> { name, room, t }, le plus récent des trois serveurs
+const pending = new Set();    // ids des gens du salon à qui on a demandé d'être amis
+let groups = [];              // salons privés connus
+let notices = [];             // invitations et demandes en attente de réponse
+const invitedAt = new Map();  // tid -> heure de la dernière invitation envoyée
+const loadList = (k) => { try { const v = JSON.parse(store.get(k) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
+
+const ready = (async () => {
+  let code = normCode(store.get("code"));
+  if (!validCode(code)) { code = randomText(10, ALPHA); store.set("code", code); }
+  me.code = code;
+  me.tid = (await idOf(code)).tid;
+  for (const f of loadList("friends")) {
+    const c = normCode(f?.code);
+    if (validCode(c) && c !== me.code && !friends.some(x => x.code === c))
+      friends.push({ code: c, name: String(f.name ?? "?").slice(0, 24), tid: (await idOf(c)).tid });
+  }
+  groups = loadList("groups").filter(g => typeof g === "string" && isPrivate(g));
+})();
+
+const saveFriends = () => store.set("friends", JSON.stringify(friends.map(({ code, name }) => ({ code, name }))));
+const friendOnline = (f) => { const s = fstatus.get(f.tid); return s && Date.now() - s.t < FRESH ? s : null; };
+const topicsWanted = () => [U + me.tid + "/i", ...friends.map(f => U + f.tid + "/s")];
+
+function syncSubs() {
+  const want = new Set(topicsWanted());
+  for (const l of links) {
+    if (!l.online) continue;
+    const add = [...want].filter(t => !l.subs.has(t)), del = [...l.subs].filter(t => !want.has(t));
+    if (add.length) l.client.subscribe(add, { qos: 1 });
+    if (del.length) l.client.unsubscribe(del);
+    l.subs = new Set(want);
+  }
+}
+
+async function publishStatus(only) {
+  if (!me.tid) return;
+  const payload = await seal(me.code, { name: myName(), room: curRoom, t: Date.now() });
+  for (const l of only ? [only] : links) if (l.online) l.client.publish(U + me.tid + "/s", payload, { qos: 1, retain: true });
+}
+
+async function sendInbox(code, msg) {
+  const { tid } = await idOf(code);
+  const payload = await seal(code, { ...msg, from: me.code, name: myName(), n: START + "-" + (++seq) });
+  for (const l of links) if (l.online) l.client.publish(U + tid + "/i", payload, { qos: 1 });
+}
+
+async function addFriend(code, name) {
+  if (code === me.code || friends.some(f => f.code === code)) return;
+  const { tid } = await idOf(code);
+  if (friends.some(f => f.code === code)) return;
+  friends.push({ code, name: (name || "?").slice(0, 24), tid });
+  pending.delete(tid);
+  saveFriends();
+  syncSubs();
+  sendInbox(code, { type: "ami" });   // il voit une demande, ou nous ajoute tout seul s'il l'avait demandé
+  renderFriends();
+}
+function removeFriend(f) {
+  friends = friends.filter(x => x !== f);
+  fstatus.delete(f.tid);
+  saveFriends();
+  syncSubs();
+  renderFriends();
+}
+function addGroup(room) {
+  if (!isPrivate(room) || groups.some(g => sameRoom(g, room))) return;
+  groups.push(room);
+  store.set("groups", JSON.stringify(groups));
+}
+
+function isFresh(key) {   // un message arrive une fois par serveur : on n'en traite qu'un
+  if (seen.has(key)) return false;
+  const now = Date.now();
+  seen.set(key, now);
+  if (seen.size > 500) for (const [k, t] of seen) if (now - t > 60000) seen.delete(k);
+  return true;
+}
+
+async function onUserMessage(rest, payload) {
+  const [tid, kind] = rest.split("/");
+  if (kind === "s") {
+    const f = friends.find(x => x.tid === tid);
+    if (!f) return;
+    if (!payload.length) { fstatus.delete(tid); renderFriends(); return; }
+    const s = await unseal(f.code, payload);
+    if (!s || typeof s.t !== "number") return;
+    const old = fstatus.get(tid);
+    if (old && old.t > s.t) return;
+    const name = String(s.name ?? "?").slice(0, 24);
+    fstatus.set(tid, { name, room: typeof s.room === "string" ? s.room.slice(0, 80) : "", t: s.t });
+    if (f.name !== name) { f.name = name; saveFriends(); }
+    renderFriends();
+  } else if (kind === "i" && tid === me.tid) {
+    const m = await unseal(me.code, payload);
+    const from = normCode(m?.from), name = String(m?.name ?? "?").slice(0, 24);
+    if (!m || !validCode(from) || from === me.code || !isFresh("i/" + from + "/" + m.n)) return;
+    if (m.type === "invite" && typeof m.room === "string" && m.room.trim()) {
+      const room = m.room.trim().slice(0, 80);
+      if (sameRoom(room, curRoom)) return;
+      notice({ key: "inv/" + from, text: "📨 " + name + " t'invite dans « " + roomLabel(room) + " »",
+               yes: "Rejoindre", act: () => goRoom(room) }, true);
+    } else if (m.type === "ami") {
+      if (friends.some(x => x.code === from)) return;
+      if (pending.has((await idOf(from)).tid)) { addFriend(from, name); return; }
+      notice({ key: "ami/" + from, text: "👋 " + name + " t'a ajouté en ami", yes: "Ajouter", act: () => addFriend(from, name) });
+    }
+  }
+}
+
+function onFriendRequest(m) {   // demande faite depuis le salon, avec le code de celui qui demande
+  const from = normCode(m.code), name = String(m.name ?? "?").slice(0, 24);
+  if (!validCode(from) || from === me.code || friends.some(f => f.code === from)) return;
+  notice({ key: "ami/" + from, text: "👋 " + name + " veut être ton ami", yes: "Accepter", act: () => addFriend(from, name) });
+}
+function askFriend(pid, p) {
+  pending.add(p.u);
+  sendAll("f", JSON.stringify({ id: myId, to: pid, name: myName(), code: me.code, n: START + "-" + (++seq) }), { qos: 1 });
+  renderFriends();
+}
+
+function notice(n, loud) {
+  notices = notices.filter(x => x.key !== n.key).slice(-4);
+  notices.push(n);
+  renderNotice();
+  if (loud) {
+    const key = "invit/" + Date.now();
+    startVoice(key, "canard");
+    endVoice(key);
+  }
+  if (document.hidden) {
+    document.title = "📨 Klaxon";
+    if ("Notification" in window && Notification.permission === "granted") {
+      try { new Notification("Klaxon", { body: n.text.slice(3), icon: "icon.svg", tag: n.key }); } catch {}
+    }
+  }
+}
+function renderNotice() {
+  const n = notices[0];
+  $("notice").hidden = !n;
+  if (n) { $("notice-text").textContent = n.text; $("notice-yes").textContent = n.yes; }
+}
+
 // ---------- salon ----------
 async function roomBase(room) {
   // identique à hashlib.sha256(room.strip().lower()).hexdigest()[:20]
@@ -328,7 +652,7 @@ async function roomBase(room) {
 }
 const myName = () => ($("name").value.trim() || "Anonyme").slice(0, 24);
 const mySound = () => soundOf(store.get("sound"));
-const presence = () => JSON.stringify({ name: myName(), sound: mySound() });
+const presence = () => JSON.stringify({ name: myName(), sound: mySound(), u: me.tid });
 
 function refresh() {
   online = links.some(l => l.online);
@@ -338,7 +662,7 @@ function refresh() {
 }
 
 function makeLink(url, myBase) {
-  const link = { online: false, peers: new Map() };
+  const link = { online: false, peers: new Map(), subs: new Set() };
   const c = link.client = mqtt.connect(url, {
     clientId: "klaxon-" + myId,
     keepalive: 15,
@@ -349,13 +673,16 @@ function makeLink(url, myBase) {
   });
   c.on("connect", () => {
     link.online = true;
-    c.subscribe(myBase + "#", { qos: 1 });
+    link.subs = new Set(topicsWanted());
+    c.subscribe([myBase + "#", ...link.subs], { qos: 1 });
     c.publish(myBase + "p/" + myId, presence(), { qos: 1, retain: true });
+    publishStatus(link);
     refresh();
   });
   c.on("close", () => { link.online = false; link.peers.clear(); refresh(); });
   c.on("error", () => {});
   c.on("message", (topic, payload) => {
+    if (topic.startsWith(U)) { onUserMessage(topic.slice(U.length), payload); return; }
     if (!topic.startsWith(myBase)) return;
     const sub = topic.slice(myBase.length);
     if (sub.startsWith("p/")) {
@@ -365,7 +692,8 @@ function makeLink(url, myBase) {
       else {
         try {
           const p = JSON.parse(payload.toString());
-          link.peers.set(pid, { name: String(p.name ?? "?").slice(0, 24), sound: soundOf(p.sound) });
+          link.peers.set(pid, { name: String(p.name ?? "?").slice(0, 24), sound: soundOf(p.sound),
+                                u: /^[0-9a-f]{20}$/.test(p.u) ? p.u : "" });
         } catch { return; }
       }
       refresh();
@@ -377,15 +705,14 @@ function makeLink(url, myBase) {
     if (sub === "h") {
       if (!(m.to == null || m.to === myId)) return;
       const key = m.id + "/" + (m.n ?? Math.random());   // sans numéro : ancienne version, un seul serveur
-      if (seen.has(key)) return;
-      const now = Date.now();
-      seen.set(key, now);
-      if (seen.size > 500) for (const [k, t] of seen) if (now - t > 60000) seen.delete(k);
+      if (!isFresh(key)) return;
       startVoice(key, m.sound);
       if (!m.hold) endVoice(key);                        // ancienne version : un coup simple
       honkedBy(m.id, String(m.name ?? "?").slice(0, 24), m.to == null);
     } else if (sub === "he") {
       endVoice(m.id + "/" + m.n);
+    } else if (sub === "f" && m.to === myId && isFresh("f/" + m.id + "/" + m.n)) {
+      onFriendRequest(m);
     }
   });
   return link;
@@ -399,7 +726,10 @@ async function join(room) {
   }
   links = [];
   riposte = null;
+  curRoom = room;
+  addGroup(room);
   refresh();
+  await ready;
   base = await roomBase(room);
   links = BROKERS.map(url => makeLink(url, base));
   refresh();
@@ -408,7 +738,7 @@ async function join(room) {
 function sendAll(sub, payload, opts) {
   for (const l of links) if (l.online) l.client.publish(base + sub, payload, opts);
 }
-const announce = () => sendAll("p/" + myId, presence(), { qos: 1, retain: true });
+const announce = () => { sendAll("p/" + myId, presence(), { qos: 1, retain: true }); publishStatus(); };
 
 // ---------- klaxonner : appuyer = ça klaxonne, relâcher = ça s'arrête ----------
 let holding = null;   // { n, btn, timer }
@@ -505,6 +835,73 @@ function render() {
     b.lastChild.textContent = SOUNDS[p.sound].e;
     b.classList.toggle("riposte", riposte?.id === pid);
   });
+  renderFriends();
+}
+
+function el(tag, props, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...kids);
+  return e;
+}
+function btn(text, cls, onclick, disabled) {
+  const b = el("button", { type: "button", className: "btn " + (cls || ""), textContent: text, disabled: !!disabled });
+  b.addEventListener("click", onclick);
+  return b;
+}
+function xBtn(label, onclick) {
+  const x = el("button", { type: "button", className: "x", textContent: "✕", title: label });
+  x.setAttribute("aria-label", label);
+  x.addEventListener("click", onclick);
+  return x;
+}
+function renderFriends() {
+  const on = friends.filter(friendOnline).length;
+  $("friends-btn").textContent = "👥 Amis" + (on ? " · " + on : "");
+  if (!$("friends").open) return;
+  $("my-code").textContent = me.code ? showCode(me.code) : "…";
+
+  const rows = friends.map(f => ({ f, s: friendOnline(f) }))
+    .sort((a, b) => (!!b.s - !!a.s) || a.f.name.localeCompare(b.f.name, "fr", { sensitivity: "base" }));
+  $("friend-list").replaceChildren(...rows.map(({ f, s }) => {
+    const here = s && s.room && sameRoom(s.room, curRoom);
+    const where = !s ? "hors ligne" : here ? "avec toi" : s.room ? "dans « " + roomLabel(s.room) + " »" : "en ligne";
+    const li = el("li", {}, el("span", { className: "dot" + (s ? " on" : "") }),
+      el("span", { className: "who" }, el("b", { textContent: f.name }), el("small", { textContent: where })));
+    if (s && s.room && !here) li.append(btn("Rejoindre", "yes", () => { goRoom(s.room); $("friends").close(); }));
+    if (s && !here) {
+      const recent = Date.now() - (invitedAt.get(f.tid) || 0) < 3000;
+      li.append(btn(recent ? "✓ Invité" : "Inviter", "", () => {
+        sendInbox(f.code, { type: "invite", room: curRoom });
+        invitedAt.set(f.tid, Date.now());
+        setTimeout(renderFriends, 3050);
+        renderFriends();
+      }, recent));
+    }
+    li.append(xBtn("Retirer " + f.name, () => { if (confirm("Retirer " + f.name + " de tes amis ?")) removeFriend(f); }));
+    return li;
+  }));
+  if (!friends.length) $("friend-list").append(el("li", {}, el("span", { className: "empty", textContent: "Pas encore d'amis : ajoute un code, ou quelqu'un de ton salon." })));
+
+  const tids = new Set(friends.map(f => f.tid));
+  const strangers = [...peers].filter(([, p]) => p.u && p.u !== me.tid && !tids.has(p.u))
+    .sort((a, b) => a[1].name.localeCompare(b[1].name, "fr", { sensitivity: "base" }));
+  $("here-sec").hidden = !strangers.length;
+  $("here-list").replaceChildren(...strangers.map(([pid, p]) => el("li", {},
+    el("span", { className: "who" }, el("b", { textContent: p.name })),
+    pending.has(p.u) ? btn("Demande envoyée", "", () => {}, true) : btn("+ Ajouter", "yes", () => askFriend(pid, p)))));
+
+  $("group-list").replaceChildren(...groups.map(g => {
+    const here = sameRoom(g, curRoom);
+    return el("li", {}, el("span", { className: "who" }, el("b", { textContent: roomLabel(g) }), el("small", { textContent: here ? "tu y es" : "" })),
+      here ? btn("Copier le lien", "", (e) => copyLink(e.target, g)) : btn("Entrer", "yes", () => { goRoom(g); $("friends").close(); }),
+      xBtn("Oublier " + roomLabel(g).slice(3), () => {
+        if (!confirm("Oublier le groupe « " + roomLabel(g).slice(3) + " » ? Il faudra une invitation pour y revenir.")) return;
+        groups = groups.filter(o => o !== g);
+        store.set("groups", JSON.stringify(groups));
+        renderFriends();
+      }));
+  }));
+  if (!groups.length) $("group-list").append(el("li", {}, el("span", { className: "empty", textContent: "Aucun groupe privé pour l'instant." })));
 }
 
 function renderSounds() {
@@ -548,6 +945,18 @@ const hashRoom = decodeURIComponent(location.hash.slice(1));
 $("gate-name").value = store.get("name");
 $("gate-room").value = hashRoom || store.get("room");
 ($("gate-name").value ? $("gate-room").value ? $("enter") : $("gate-room") : $("gate-name")).focus();
+
+// Android avec l'appli installée : ouvre le salon dedans (sinon on reste sur cette page)
+function openAppLink() {
+  const room = $("gate-room").value.trim();
+  $("open-app").href = "intent://klaxon.stlkm.fr/" + (room ? "?salon=" + encodeURIComponent(room) : "") +
+    "#Intent;scheme=https;package=fr.stlkm.klaxon;S.browser_fallback_url=" + encodeURIComponent(location.href) + ";end";
+}
+if (/Android/i.test(navigator.userAgent)) {
+  $("open-app").hidden = false;
+  openAppLink();
+  $("gate-room").addEventListener("input", openAppLink);
+}
 renderSounds();
 
 $("gate-form").addEventListener("submit", (e) => {
@@ -558,44 +967,89 @@ $("gate-form").addEventListener("submit", (e) => {
 
 $("room-form").addEventListener("submit", (e) => { e.preventDefault(); document.activeElement.blur(); });
 $("name").addEventListener("change", () => { store.set("name", myName()); announce(); });
-$("room-input").addEventListener("change", () => {
+function applyRoom() {
   const room = $("room-input").value.trim();
   if (!room) { $("room-input").value = store.get("room"); return; }
   if (room === store.get("room")) return;
   store.set("room", room);
   history.replaceState(null, "", "#" + encodeURIComponent(room));
   join(room);
-});
+}
+function goRoom(room) { $("room-input").value = room; applyRoom(); }
+$("room-input").addEventListener("change", applyRoom);
 
-$("invite").addEventListener("mousedown", (e) => e.preventDefault());
-$("invite").addEventListener("click", async () => {
-  const link = SITE + "#" + encodeURIComponent($("room-input").value.trim());
-  const btn = $("invite");
+async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(link);
+    await navigator.clipboard.writeText(text);
   } catch {
     const tmp = document.createElement("textarea");
-    tmp.value = link;
+    tmp.value = text;
     document.body.append(tmp);
     tmp.select();
     try { document.execCommand("copy"); } catch {}
     tmp.remove();
   }
-  btn.textContent = "✓ Lien copié";
-  btn.classList.add("ok");
-  setTimeout(() => { btn.textContent = "🔗 Inviter"; btn.classList.remove("ok"); }, 1600);
+}
+function copied(b, text) {
+  if (b.classList.contains("ok")) return;
+  const old = b.textContent;
+  b.textContent = text;
+  b.classList.add("ok");
+  setTimeout(() => { b.textContent = old; b.classList.remove("ok"); }, 1600);
+}
+const copyLink = (b, room) => copyText(SITE + "#" + encodeURIComponent(room)).then(() => copied(b, "✓ Lien copié"));
+$("invite").addEventListener("mousedown", (e) => e.preventDefault());
+$("invite").addEventListener("click", () => copyLink($("invite"), $("room-input").value.trim()));
+
+// ---------- amis : fenêtre, invitations ----------
+$("friends-btn").addEventListener("mousedown", (e) => e.preventDefault());
+$("friends-btn").addEventListener("click", async () => {
+  await ready;
+  $("add-msg").textContent = "";
+  $("friends").showModal();
+  renderFriends();
 });
+$("friends-close").addEventListener("click", () => $("friends").close());
+$("friends").addEventListener("click", (e) => {   // clic à côté de la fenêtre
+  const r = $("friends").getBoundingClientRect();
+  if (e.target === $("friends") && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) $("friends").close();
+});
+$("copy-code").addEventListener("click", () => copyText(showCode(me.code)).then(() => copied($("copy-code"), "✓ Copié")));
+$("add-friend").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const code = normCode($("friend-code").value), msg = $("add-msg");
+  if (!validCode(code)) { msg.textContent = "Un code ami fait 10 caractères, comme " + showCode(me.code) + "."; return; }
+  if (code === me.code) { msg.textContent = "C'est ton propre code 🙂"; return; }
+  if (friends.some(f => f.code === code)) { msg.textContent = "Déjà dans tes amis."; return; }
+  await addFriend(code, "?");
+  $("friend-code").value = "";
+  msg.textContent = "Ajouté ! Son nom apparaît dès qu'il est en ligne.";
+});
+$("new-group").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("group-name").value.trim().replace(/~/g, "-").slice(0, 40);
+  if (!name) return;
+  $("group-name").value = "";
+  goRoom(name + "~" + randomText(10, ALPHA.toLowerCase()));   // l'ajoute aux groupes
+  renderFriends();
+});
+$("notice-yes").addEventListener("click", () => { const n = notices.shift(); renderNotice(); n?.act(); });
+$("notice-no").addEventListener("click", () => { notices.shift(); renderNotice(); });
+setInterval(() => { publishStatus(); renderFriends(); }, HEARTBEAT);
 
 bindHold($("all"), () => null);
 bindHold($("status"), () => riposte?.id ?? undefined);
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && !e.repeat && !$("room").hidden && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement)) {
+  if (e.code === "Space" && !e.repeat && !$("room").hidden && !$("friends").open && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement)) {
     e.preventDefault();
     press(null, $("all"));
   }
 });
 document.addEventListener("keyup", (e) => { if (e.code === "Space") release(); });
-window.addEventListener("pagehide", () => sendAll("p/" + myId, "", { qos: 1, retain: true }));
+window.addEventListener("pagehide", () => {
+  sendAll("p/" + myId, "", { qos: 1, retain: true });
+  if (me.tid) for (const l of links) if (l.online) l.client.publish(U + me.tid + "/s", "", { qos: 1, retain: true });
+});
 
 if ("serviceWorker" in navigator && location.protocol === "https:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});

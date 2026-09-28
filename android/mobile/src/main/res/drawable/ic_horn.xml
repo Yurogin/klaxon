@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- le pavillon de icon.svg, réduit pour tenir dans la zone sûre d'une icône adaptative -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group android:scaleX="0.62" android:scaleY="0.62" android:pivotX="256" android:pivotY="256" android:translateX="-8">
+        <path android:fillColor="#FFC629" android:pathData="M120,206h60l150,-86v272l-150,-86h-60z" />
+        <path android:strokeColor="#FFC629" android:strokeWidth="26" android:strokeLineCap="round"
+            android:pathData="M370,196q34,60 0,120M402,160q60,96 0,192" />
+    </group>
+</vector>
