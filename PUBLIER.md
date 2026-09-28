@@ -18,11 +18,20 @@ Monter `versionCode` et `versionName` dans `android/mobile/build.gradle.kts` et
   `Klaxon-telephone.apk` et `wear/build/outputs/apk/release/wear-release.apk`
   en `Klaxon-montre.apk`.
 
-Les deux APK sont signées avec la clé de debug (`~/.android/debug.keystore`).
-**Garde cette clé** : avec une autre signature, les potes ne pourraient plus
-mettre à jour par-dessus, et l'appli n'ouvrirait plus toute seule les liens
-`klaxon.stlkm.fr` (`.well-known/assetlinks.json` contient l'empreinte de
-celle-ci).
+Les deux APK sont signées par `~/.android/debug.keystore`. **Cette clé est
+irremplaçable** : avec une autre signature, les potes ne pourraient plus mettre
+à jour par-dessus, et l'appli n'ouvrirait plus toute seule les liens
+`klaxon.stlkm.fr`. Une sauvegarde est sur le Drive ; si un jour tu la restaures,
+vérifie que c'est la bonne avant de bâtir :
+
+```
+keytool -list -v -keystore %USERPROFILE%\.android\debug.keystore -storepass android -alias androiddebugkey
+```
+
+L'empreinte SHA-256 doit être `5F:86:94:C2:D3:79:B0:C8:52:3C:0D:AD:5B:27:8A:91:
+D0:0A:9D:23:81:86:61:2D:86:18:44:A5:4D:2A:38:DC`, la même que dans
+`.well-known/assetlinks.json`. Si elle diffère, n'assemble rien : Android Studio
+en a recréé une au hasard, et il faut remettre la vraie.
 
 Les binaires ne sont pas dans le dépôt (trop lourds à chaque build) : ils vont
 dans la release GitHub, d'où le site les fait télécharger. `dl/` n'est qu'un
