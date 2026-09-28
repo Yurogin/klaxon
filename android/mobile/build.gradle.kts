@@ -24,6 +24,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true   // BuildConfig.VERSION_NAME : ce que Update compare à la dernière release
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"

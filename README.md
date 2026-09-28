@@ -28,6 +28,9 @@ Tout se télécharge en bas de https://klaxon.stlkm.fr, ou dans la
   pas du Play Store : « Installer quand même ». Elle reste connectée en fond,
   sonne écran éteint, et ouvre elle-même les liens `klaxon.stlkm.fr` que les
   potes envoient.
+  Elle demande à GitHub une fois par jour s'il existe une version plus récente,
+  et propose alors un lien — c'est tout ce qui sort de ton téléphone vers
+  GitHub.
 - **Montre (Wear OS)** : `Klaxon-montre.apk`, à installer depuis le téléphone
   (mode développeur de la montre, `adb install`). Elle ne marche **qu'avec
   l'appli Android** : c'est le téléphone qui parle aux serveurs, la montre

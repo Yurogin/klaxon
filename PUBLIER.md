@@ -3,6 +3,13 @@
 Pour moi, pas pour les potes : comment refaire les applis et les mettre en
 ligne. La présentation du projet est dans [README.md](README.md).
 
+## Avant de refaire les binaires
+
+Monter `versionCode` et `versionName` dans `android/mobile/build.gradle.kts` et
+`android/wear/build.gradle.kts`, et donner à la release le tag correspondant
+(`v1.1` pour `versionName = "1.1"`). C'est là-dessus que l'appli compare : sans
+ça, personne ne verra qu'une version est sortie.
+
 ## Refaire les binaires
 
 - **Windows** : `windows/build.bat` (il faut Python) → `windows/Klaxon.exe`.

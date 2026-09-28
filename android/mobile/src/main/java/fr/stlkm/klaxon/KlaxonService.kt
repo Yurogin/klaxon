@@ -30,6 +30,7 @@ class KlaxonApp : Application() {
             override fun onStart(owner: LifecycleOwner) {
                 Core.visible = true
                 NotificationManagerCompat.from(this@KlaxonApp).cancel(Notif.HONK_ID)
+                Update.check()
             }
 
             override fun onStop(owner: LifecycleOwner) {

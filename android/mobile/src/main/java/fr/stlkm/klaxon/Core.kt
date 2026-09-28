@@ -2,7 +2,9 @@ package fr.stlkm.klaxon
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -116,6 +118,11 @@ object Core : NetEvents {
     var linkHintDismissed: Boolean
         get() = prefs.getBoolean("hint_liens", false)
         set(v) = prefs.edit().putBoolean("hint_liens", v).apply()
+
+    /** Quand Klaxon a demandé à GitHub, pour la dernière fois, s'il y a du nouveau. */
+    var lastCheck: Long
+        get() = prefs.getLong("maj", 0)
+        set(v) = prefs.edit().putLong("maj", v).apply()
 
     fun stopListening() {
         listening = false
@@ -313,6 +320,18 @@ object Core : NetEvents {
 
     override fun friendAsked(from: String, name: String) = ui {
         if (!isFriend(from)) notice(Notice("ami/$from", "👋 $name veut être ton ami", "Accepter") { addFriend(from, name) })
+    }
+
+    /** Une version plus récente est sortie : le bandeau mène à la page des releases. */
+    fun newVersion(version: String) = ui {
+        notice(Notice("maj", "⬆️ Klaxon $version est sorti", "Voir") {
+            val page = Intent(Intent.ACTION_VIEW, Uri.parse(Update.PAGE)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                app.startActivity(page)
+            } catch (e: Exception) {
+                // Pas de navigateur : le bandeau a fait ce qu'il pouvait.
+            }
+        })
     }
 
     private fun notice(n: Notice) {
