@@ -25,7 +25,8 @@ la release GitHub, et dans `dl/` pour le site.
 1. **La release** : une [nouvelle release](https://github.com/Yurogin/klaxon/releases/new)
    avec `Klaxon-telephone.apk`, `Klaxon-montre.apk` et `Klaxon.exe` en pièces
    jointes. Les liens `…/releases/latest/download/<fichier>` suivent toujours
-   la dernière — c'est ce que doit viser le hub STLKM pour `Klaxon.exe`.
+   la dernière. Le hub STLKM y prend `Klaxon.exe` tout seul (fiche `klaxon` de
+   `stlkm-catalog`, `source = github-release`) : rien à faire de ce côté.
 2. **Le site** : copier sur le serveur `index.html`, `sw.js`,
    `manifest.webmanifest`, `web.config`, `mqtt.min.js`, `icon.svg`,
    `icon-512.png`, `.well-known/assetlinks.json` et le dossier `dl/` avec les
