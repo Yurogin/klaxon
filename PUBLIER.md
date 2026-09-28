@@ -24,8 +24,9 @@ mettre à jour par-dessus, et l'appli n'ouvrirait plus toute seule les liens
 `klaxon.stlkm.fr` (`.well-known/assetlinks.json` contient l'empreinte de
 celle-ci).
 
-Les binaires ne sont pas dans le dépôt (85 Mo à chaque build) : ils vont dans
-la release GitHub, et dans `dl/` pour le site.
+Les binaires ne sont pas dans le dépôt (trop lourds à chaque build) : ils vont
+dans la release GitHub, d'où le site les fait télécharger. `dl/` n'est qu'un
+dossier de préparation local, le temps de les déposer sur la release.
 
 ## Mettre en ligne
 
@@ -34,11 +35,15 @@ la release GitHub, et dans `dl/` pour le site.
    jointes. Les liens `…/releases/latest/download/<fichier>` suivent toujours
    la dernière. Le hub STLKM y prend `Klaxon.exe` tout seul (fiche `klaxon` de
    `stlkm-catalog`, `source = github-release`) : rien à faire de ce côté.
-2. **Le site** : copier sur le serveur `index.html`, `sw.js`,
-   `manifest.webmanifest`, `web.config`, `mqtt.min.js`, `icon.svg`,
-   `icon-512.png`, `.well-known/assetlinks.json` et le dossier `dl/` avec les
-   trois binaires. Sans `dl/`, les boutons de téléchargement de la page
-   d'accueil tombent sur une 404.
+2. **Le site** : rien à faire pour une nouvelle version. Les boutons de la page
+   d'accueil pointent sur `releases/latest/download/<fichier>`, qui suit tout
+   seul la dernière release. On ne copie sur le serveur (`index.html`, `sw.js`,
+   `manifest.webmanifest`, `web.config`, `mqtt.min.js`, les icônes,
+   `.well-known/assetlinks.json`) que lorsqu'on a modifié ces fichiers-là.
+
+   Attention si tu remets un jour des fichiers dans `dl/` : Cloudflare les garde
+   quatre heures, donc le site servirait encore les anciens. Il faudrait vider
+   son cache après chaque copie.
 
 Si `index.html` change, penser à monter le numéro de `CACHE` dans `sw.js` :
 c'est ce qui vide le cache des applis déjà installées.
