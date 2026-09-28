@@ -56,5 +56,3 @@ Le statut envoyé aux amis (nom, salon) et les invitations sont chiffrés
 (AES-GCM) avec une clé tirée du code ami : seul qui connaît ton code peut les
 lire ou t'écrire. Garde-le pour tes amis. La version web et l'appli Windows ont
 chacune leur code.
-
-Fabriquer les applis et publier une nouvelle version : [PUBLIER.md](PUBLIER.md).

@@ -6,3 +6,6 @@ __pycache__/
 *.apk
 *.exe
 dl/
+
+# Mon mode d'emploi de publication : il ne regarde que moi (copie sur le Drive)
+docs/
