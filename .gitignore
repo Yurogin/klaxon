@@ -1,2 +1,8 @@
 build/
 __pycache__/
+
+# Binaires de version : trop lourds pour le dépôt, ils vont dans la release GitHub
+# (https://github.com/Yurogin/klaxon/releases) et dans dl/ pour le site.
+*.apk
+*.exe
+dl/
