@@ -36,6 +36,10 @@ dependencies {
     implementation("androidx.wear.compose:compose-material3:1.7.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.core:core-ktx:1.19.1")
+    // play-services-wearable tire une androidx.fragment de 2019, que lint refuse en release
+    // (ActivityResult y était cassé). La montre ne s'en sert pas, mais la version courante coûte
+    // moins cher que de faire taire la vérification.
+    implementation("androidx.fragment:fragment:1.9.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.wear.tiles:tiles:1.6.2")
     implementation("androidx.wear.protolayout:protolayout:1.4.2")
