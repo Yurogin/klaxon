@@ -489,6 +489,15 @@ fun FriendsScreen(back: () -> Unit) {
                 Btn("Créer", Yellow, Ink, Modifier.padding(start = 8.dp), onClick = create)
             }
             Hint("Un groupe privé a un nom secret : on n'y entre que par invitation ou par son lien.")
+        }
+
+        item {
+            Section("Version")
+            val status by Update.status.collectAsState()
+            ListRow("Klaxon " + BuildConfig.VERSION_NAME, status) {
+                Btn("Vérifier", BtnC, Fg) { Update.check(force = true) }
+            }
+            Hint("Klaxon regarde tout seul une fois par jour, et le bandeau te prévient.")
             Spacer(Modifier.height(24.dp))
         }
     }

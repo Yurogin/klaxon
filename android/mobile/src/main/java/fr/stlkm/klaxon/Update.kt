@@ -1,5 +1,6 @@
 package fr.stlkm.klaxon
 
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -13,15 +14,26 @@ object Update {
     const val PAGE = "https://github.com/Yurogin/klaxon/releases/latest"
     private const val EVERY = 24 * 60 * 60 * 1000L   // ms entre deux vérifications
 
-    fun check() {
+    /** Ce que le bouton « Vérifier » affiche sous la version : vide tant qu'on n'a rien demandé. */
+    val status = MutableStateFlow("")
+
+    /** `force` : l'utilisateur a appuyé sur « Vérifier », on ne lui oppose pas le délai d'un jour
+     *  et on lui répond, même quand il n'y a rien de neuf. */
+    fun check(force: Boolean = false) {
         val now = System.currentTimeMillis()
         // Une horloge remise en arrière ne doit pas bloquer la vérification pour toujours.
         val last = Core.lastCheck
-        if (last in (now - EVERY + 1)..now) return
+        if (!force && last in (now - EVERY + 1)..now) return
         Core.lastCheck = now
+        if (force) status.value = "Recherche…"
         thread(isDaemon = true) {
-            val tag = latestTag() ?: return@thread
-            if (newer(tag, BuildConfig.VERSION_NAME)) Core.newVersion(tag.trimStart('v', 'V'))
+            val tag = latestTag()?.trimStart('v', 'V')
+            if (tag != null && newer(tag, BuildConfig.VERSION_NAME)) {
+                Core.newVersion(tag)
+                if (force) status.value = "Klaxon $tag est sorti"
+            } else if (force) {
+                status.value = if (tag == null) "GitHub n'a pas répondu" else "À jour"
+            }
         }
     }
 

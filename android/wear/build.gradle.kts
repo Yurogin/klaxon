@@ -11,8 +11,8 @@ android {
         applicationId = "fr.stlkm.klaxon"  // même identifiant que l'appli téléphone : obligatoire pour qu'elles se parlent
         minSdk = 30
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
